@@ -1,0 +1,49 @@
+---
+title: "Explore DSB"
+author: "Otto Perdeck"
+date: "Friday, December 18, 2015"
+output: html_document
+---
+
+Exploring the characteristics of the train data and the mock-up submission datasets that
+are generated without respect to the images.
+
+```{r}
+library(tidyr)
+library(data.table)
+library(ggplot2)
+library(dplyr)
+
+train_ori <- fread('data/train.csv') 
+train <- train_ori %>% gather(Phase, Volume, -Id)
+summary(train_ori)
+```
+
+Cumulative Systole and Diastole distributions in the train dataset:
+
+```{r, echo=FALSE}
+qplot(Volume, data=train, stat = "ecdf", geom = "step", colour=Phase)
+
+qplot(Phase, Volume, data=train, geom="boxplot", fill=Phase)+coord_flip()
+```
+
+Now, generate mock scores and analyze these.
+
+See 
+https://github.com/udibr/DSB2/blob/master/optimal.ipynb
+
+```{r}
+subm <- fread('analysis/submission.csv')[1:2,]
+ds <- data.frame(Diastole = as.vector(t(subm[1,2:ncol(subm),with=F])),
+                 Systole  = as.vector(t(subm[2,2:ncol(subm),with=F]))) 
+ds$P <- 1:nrow(ds)
+summary(ds)
+```
+
+Distribution of the generated data:
+
+```{r, echo=FALSE}
+ds_gathered <- gather(ds,Phase,Density,-P)
+ds_gathered$Phase <- factor(ds_gathered$Phase, levels=levels(train$Phase))
+ggplot(data=ds_gathered, aes(x=P, y=Density, colour=Phase))+geom_line()
+```

@@ -29,20 +29,27 @@ pos2coord<-function(pos=NULL, coord=NULL, dim.mat=NULL){
 # after diastole = max
 #  ejection fraction = 100 * (Vd - Vs)/Vd
 
-caseFolders <- list.dirs("data", recursive=F, full.names=F)
-for (caseFolder in caseFolders) {
-#   print(caseFolder) # = nr 1 .. 500
-  caseFolder <- paste("data", caseFolder, "study", sep="/")
-  
-  serieFolders <- list.dirs(caseFolder, recursive=F, full.names=F)
-  # NB excluding the 2 chamber and 4 chamber views here, only the short axis track
-  serieFolders <- serieFolders[ grepl("sax_[[:digit:]]+$", serieFolders) ]
-#   print(imgFolders)
-  
-  for (serieFolder in serieFolders) {
-    sliceFolder <- paste(caseFolder, serieFolder, sep="/")
-
-    print(sliceFolder) # inside here are the .dcm frames
+for (dataset in c('train','validate','test')) {
+  datasetDir <- paste("data",dataset,sep="/")
+  if (dir.exists(datasetDir)) {
+    caseFolders <- list.dirs(datasetDir, recursive=F, full.names=F)
+    for (caseFolder in caseFolders) {
+    #   print(caseFolder) # = nr 1 .. 500
+      caseFolder <- paste(datasetDir, caseFolder, "study", sep="/")
+      
+      serieFolders <- list.dirs(caseFolder, recursive=F, full.names=F)
+      # NB excluding the 2 chamber and 4 chamber views here, only the short axis track
+      serieFolders <- serieFolders[ grepl("sax_[[:digit:]]+$", serieFolders) ]
+    #   print(imgFolders)
+      
+      for (serieFolder in serieFolders) {
+        sliceFolder <- paste(caseFolder, serieFolder, sep="/")
+    
+        print(sliceFolder) # inside here are the .dcm frames
+      }
+    }
+  } else {
+    cat("No dataset in", datasetDir, fill=T)
   }
 }
 
@@ -62,18 +69,18 @@ for (caseFolder in caseFolders) {
 # probs are cumulative?
 # see https://www.kaggle.com/c/second-annual-data-science-bowl/details/evaluation
 
-folder <- 'data/10/study/sax_11'
+folder <- 'data/train/10/study/sax_11'
 filez <- list.files(folder, pattern=".*dcm$")
 
 for (f in filez) {
   fname <- paste(folder, f, sep="/")
-  
+ 
   dicom <- readDICOMFile(fname)
   img <- Image(normalize(dicom$img))
   img <- rotate(img,-90)
   # display(img, method = "raster")
   
-  img_comb = combine(
+  img_comb = EBImage::combine(
     img,
     img > otsu(img) # Otsu’s threshold 
   )
