@@ -47,3 +47,11 @@ ds_gathered <- gather(ds,Phase,Density,-P)
 ds_gathered$Phase <- factor(ds_gathered$Phase, levels=levels(train$Phase))
 ggplot(data=ds_gathered, aes(x=P, y=Density, colour=Phase))+geom_line()
 ```
+
+```{r}
+med_Diastole <- (ds %>% mutate(d = abs(0.5 - Diastole)) %>% arrange(d))$P[1]
+med_Systole <- (ds %>% mutate(d = abs(0.5 - Systole)) %>% arrange(d))$P[1]
+
+cat("Diastole median in generated data:",med_Diastole,"in train data",median(train_ori$Diastole),fill=T)
+cat("Systole median in generated data:",med_Systole,"in train data",median(train_ori$Systole),fill=T)
+```

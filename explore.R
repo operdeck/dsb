@@ -72,6 +72,7 @@ for (dataset in c('train','validate','test')) {
 folder <- 'data/train/10/study/sax_11'
 filez <- list.files(folder, pattern=".*dcm$")
 
+allSegments <- NULL
 for (f in filez) {
   fname <- paste(folder, f, sep="/")
  
@@ -98,16 +99,63 @@ for (f in filez) {
   
   # get mean x, mean y and size for all segments...
   # then try match those in consecutive images, assign same color
+  segments <- data.frame(segmentNumber=1:max(segmented),
+                         img=fname)
   for (i in 1:max(segmented)) {
+    # TODO maybe discard too small segments (size < 10 or so)
     
+    # all coordinates of the pixels in the segment:
     coords <- as.data.frame(pos2coord(pos=which(segmented==i),dim.mat=dim(segmented)))
     names(coords) <- c('x','y')
     
-    text(x = mean(coords$x), y = mean(coords$y), label = i, col = "orange")
+    # some aggregates that characterize the segment:
+    segments$x[i] <- mean(coords$x)
+    segments$y[i] <- mean(coords$y)
+    segments$sd_x[i] <- sd(coords$x)
+    segments$sd_y[i] <- sd(coords$y)
+    segments$size[i] <- nrow(coords)
+    segments$volume[i] <- segments$size[i]*sqrt(segments$size[i]) # ideally
+    # TODO find something that characterizes 'roundness'/'circleness'
+  }
+  segments <- filter(segments, size > 10) # remove small patches
+  
+#   print(segments)
+  
+  if (is.null(allSegments)) {
+    allSegments <- segments
+    maxSegmentNumber <- max(allSegments$segmentNumber)
+  } else {
+    for (i in 1:nrow(segments)) {
+      # find 'a' in allSegments such that it matches 'i' close enough
+      # TODO make a function
+
+      distance <- sqrt((segments$x[i] - allSegments$x)^2 + (segments$y[i] - allSegments$y)^2)
+      candidates <- which(distance < 10) # etc.
+      
+      # apply criteria
+      # then select the best one
+      
+      
+      a <- which.min(distance)
+      if (distance[a] < 10 & # absolute distance
+            abs(1-allSegments$volume[a]/segments$volume[i]) < 0.20) { # relative volume tolerance
+        segments$segmentNumber[i] <- allSegments$segmentNumber[a]
+        
+        cat(i,"Identical to",a,fill=T)
+      } else {
+        maxSegmentNumber <- maxSegmentNumber+1
+        segments$segmentNumber[i] <- maxSegmentNumber
+        
+        cat(i,"NOT Identical to",a,fill=T)
+        print(allSegments[a,])
+        print(segments[i,])
+      }
+    }
+    allSegments <- rbind(allSegments, segments)
     
-    # for each segment some key characteristics
-    # mid point, size, ?
-    # then try match them from image to image
+    for (i in 1:nrow(segments)) {
+      text(x = segments$x[i], y = segments$y[i], label = segments$segmentNumber[i], col = "orange")
+    }
   }
 }
 
