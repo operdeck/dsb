@@ -34,14 +34,14 @@ pos2coord<-function(pos=NULL, coord=NULL, dim.mat=NULL){
 
 # Image processing creates 'image_features.csv'
 #
-# case   - view     - slice    <image measurements>
+# Id   - view     - slice    <image measurements>
 # 1..500   ~10 - 20   ~1..30   [eg median]
 #
 
 # from this, predict Vd and Vs
 
-# aggregate up - by case+view min/max of measurements
-# by case: mean/stddev of aggregations
+# aggregate up - by Id+view min/max of measurements
+# by Id: mean/stddev of aggregations
 
 # model with 600 classes??
 # caret can do multi-class see http://stackoverflow.com/questions/15585501/usage-of-caret-with-gbm-method-for-multiclass-classification
@@ -56,18 +56,18 @@ imageData <- NULL
 for (dataset in c('train','validate','test')) {
   datasetDir <- paste("data",dataset,sep="/")
   if (dir.exists(datasetDir)) {
-    caseFolders <- list.dirs(datasetDir, recursive=F, full.names=F)
-    for (case in caseFolders) {
-      #   print(caseFolder) # = nr 1 .. 500
-      caseFolder <- paste(datasetDir, case, "study", sep="/")
+    IdFolders <- list.dirs(datasetDir, recursive=F, full.names=F)
+    for (Id in IdFolders) {
+      #   print(IdFolder) # = nr 1 .. 500
+      IdFolder <- paste(datasetDir, Id, "study", sep="/")
       
-      serieFolders <- list.dirs(caseFolder, recursive=F, full.names=F)
+      serieFolders <- list.dirs(IdFolder, recursive=F, full.names=F)
       # NB excluding the 2 chamber and 4 chamber views here, only the short axis track
       serieFolders <- serieFolders[ grepl("sax_[[:digit:]]+$", serieFolders) ]
       
       for (serieFolder in serieFolders) { 
         # serieFolder <- 'data/train/500/study/sax_22'
-        imgFolder <- paste(caseFolder, serieFolder, sep="/")
+        imgFolder <- paste(IdFolder, serieFolder, sep="/")
         
         print("Processing:")
         print(imgFolder)
@@ -192,13 +192,14 @@ for (dataset in c('train','validate','test')) {
                     vol_p25 = quantile(volume)[2],
                     vol_p50 = quantile(volume)[3],
                     vol_p75 = quantile(volume)[4],
-                    used_img = n(),
-                    n_img = length(filez))
+                    img_used = n(),
+                    img_cnt = length(filez))
         allSegmentsGrouped$dataset <- dataset
-        allSegmentsGrouped$case <- as.integer(case)
+        allSegmentsGrouped$Id <- as.integer(Id)
         allSegmentsGrouped$series <- serieFolder
-        allSegmentsGrouped$n_series <- length(serieFolders)
-        
+        allSegmentsGrouped$series_idx <- which(serieFolder == serieFolders)
+        allSegmentsGrouped$series_cnt <- length(serieFolders)
+
         candidateSegments <- filter(allSegmentsGrouped, 
                                     size_mean > 200, 
                                     size_sd > 50)
@@ -212,6 +213,8 @@ for (dataset in c('train','validate','test')) {
         if (nrow(finalSegment) >= 1) {
           print("Identified one or more segments:")
           seriesData <- filter(allSegmentsGrouped, segmentNumber %in% finalSegment$segmentNumber)
+          seriesData$in_series_cnt <- nrow(seriesData) # number of candidate segments in this series
+          seriesData$in_series_rank <- 1:nrow(seriesData) # assume an ordering (TODO we dont have that yet)
           print(seriesData)
           if (is.null(imageData)) {
             imageData <- seriesData
@@ -223,7 +226,7 @@ for (dataset in c('train','validate','test')) {
           print("No segment identified.")
         }
       } # for serie (sax_nnn etc) 
-    } # for case
+    } # for Id
   } else {
     cat("No dataset in", datasetDir, fill=T)
   }

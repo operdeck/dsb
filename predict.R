@@ -7,6 +7,7 @@ imageData <- fread('imageData.csv')
 
 imageData <- group_by(imageData, case, series)
 # add some meta info: index of image in series, nr of differently segmented images
+# TODO: do this in extract.R - should all not be necessary anymore
 for (n in 1:nrow(imageData)) {
   if (n == 1 || (imageData$series[n] != imageData$series[n-1])) {
     imageData$in_series_rank[n] <- 1
@@ -37,10 +38,30 @@ print(ggplot(data=filter(train, Id %in% imageData$Id) %>% gather(Phase, Volume, 
              aes(x=Id, y=Volume))+geom_line(size=5)+
         ggtitle("Actual volume in train set"))
 
-# scale measured to actual, combine in one plot
-measured_med <- sapply(select(imageData, vol_min, vol_max), median)
-actual_med <- sapply(select(filter(train, Id %in% imageData$Id), -Id), median)
-scale <- actual_med[2] / measured_med[2]
-print(scale)
-# TODO combine both in one plot now
+# Prepare for predictions
+
+predictData <- group_by(imageData, Id) %>%
+  summarise(vol_min_median = median(vol_min),
+            vol_max_median = median(vol_max)) # etc for all other possibly relevant predictors
+predictData <- left_join(predictData, train, "Id")
+
+#TODO: develop model on -validation set
+systole_m <- lm(Systole ~ ., data = select(predictData, -Diastole, -Id))
+diastole_m <- lm(Diastole ~ ., data = select(predictData, -Systole, -Id))
+
+resultData <- data.frame(predictData, 
+                         Systole_pred = predict(systole_m, newdata = select(predictData, -Diastole, -Id)),
+                         Diastole_pred = predict(diastole_m, newdata = select(predictData, -Systole, -Id)))
+
+plotData <- select(resultData, contains("stole"), Id) %>% gather(Source, Volume, -Id)
+plotData$Source <- factor(plotData$Source, levels=sort(unique(as.character(plotData$Source))))
+print(ggplot(plotData, 
+       aes(x=Id, y=Volume, fill=Source)) + geom_bar(stat="identity",position="dodge"))
+
+print("Correlations:")
+print(cor(resultData$Systole, resultData$Systole_pred))
+print(cor(resultData$Diastole, resultData$Diastole_pred))
+#TODO: report accuracy (RMSD?) on validation set
+
+#TODO: translate predicted values to distributions of the volumes
 
