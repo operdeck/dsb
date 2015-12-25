@@ -55,3 +55,43 @@ med_Systole <- (ds %>% mutate(d = abs(0.5 - Systole)) %>% arrange(d))$P[1]
 cat("Diastole median in generated data:",med_Diastole,"in train data",median(train_ori$Diastole),fill=T)
 cat("Systole median in generated data:",med_Systole,"in train data",median(train_ori$Systole),fill=T)
 ```
+
+Emulate the Python script in R. Result is the same as from the Python script. To generate different
+curves, perhaps we just move the data from train_ori by a delta to the median? This assumes a similar
+distribution.
+
+```{r}
+NPROBS <- 600
+TESTIDS <- 501:700
+doHist <- function(data) {
+  h <- rep(0, NPROBS)
+  for (j in (1+as.integer(ceiling(data)))) {
+    h[j:NPROBS] <- h[j:NPROBS]+1
+  }
+  h <- h / length(data)
+}
+hSystole <- doHist(train_ori$Systole)
+hDiastole <- doHist(train_ori$Diastole)
+subm <- matrix(nrow = 2*length(TESTIDS), ncol = NPROBS)
+for (i in 1:length(TESTIDS)) {
+  Id <- TESTIDS[i]
+  subm[2*i-1,] <- hDiastole
+  subm[2*i,]   <- hSystole
+}
+subm <- data.frame(Id = as.vector(sapply(TESTIDS,function(n){paste(n,c('Diastole','Systole'),sep="_")})), subm)
+names(subm) <- c('Id', paste("P",0:(NPROBS-1),sep=""))
+
+# verify...
+subm_py <- fread('analysis/submission.csv', data.table=F)
+print(all(subm_py == subm))
+
+```
+
+Distribution of the generated data once again (from R this time):
+
+```{r, echo=FALSE}
+ds_plot <- gather(subm[1:2,],Volume,Density,-Id)
+ds_plot$Volume <- as.integer(gsub("P(.*)","\\1",ds_plot$Volume))
+ds_plot$Id <- factor(gsub(".*_(.*)","\\1",ds_plot$Id), levels=levels(train$Phase))
+ggplot(data=ds_plot, aes(x=Volume, y=Density, colour=Id))+geom_line()
+```

@@ -4,29 +4,7 @@ library(dplyr)
 library(data.table)
 
 imageData <- fread('imageData.csv')
-
-imageData <- group_by(imageData, case, series)
-# add some meta info: index of image in series, nr of differently segmented images
-# TODO: do this in extract.R - should all not be necessary anymore
-for (n in 1:nrow(imageData)) {
-  if (n == 1 || (imageData$series[n] != imageData$series[n-1])) {
-    imageData$in_series_rank[n] <- 1
-  } else {
-    imageData$in_series_rank[n] <- 1+imageData$in_series_rank[n-1]
-  }
-  if (n == 1 || (imageData$case[n] != imageData$case[n-1])) {
-    imageData$series_idx[n] <- 1
-  } else {
-    imageData$series_idx[n] <- 1+imageData$series_idx[n-1]
-  }
-}
-imageData <- ungroup(imageData) %>% 
-  mutate(Id=case) %>%
-  select(-case)
-
 imageData$Id <- factor(imageData$Id,levels=sort(unique(imageData$Id)))
-print(ggplot(data=imageData, aes(x=series_idx, y=vol_max, colour=Id))+geom_point()+geom_line()+
-  ggtitle("Volume vs image series per case"))
 
 sumImageData <- select(imageData, vol_min, vol_max, Id) %>% gather(Phase, Volume, -Id)
 print(ggplot(data=sumImageData, aes(y=Volume, x=Id, fill=Phase))+geom_boxplot()+
@@ -64,4 +42,10 @@ print(cor(resultData$Diastole, resultData$Diastole_pred))
 #TODO: report accuracy (RMSD?) on validation set
 
 #TODO: translate predicted values to distributions of the volumes
+
+plotData <- select(resultData, contains("stole"), Id) %>% 
+  gather(Phase, Actual, -Id, -Diastole_pred, -Systole_pred) %>%
+  mutate(Predicted = ifelse(Phase == "Diastole", Diastole_pred, Systole_pred))
+print(ggplot(plotData, aes(x=Actual,y=Predicted,colour=Phase))+geom_point()+stat_smooth(method = "lm")+ggtitle("Actual vs Predicted..."))
+
 
