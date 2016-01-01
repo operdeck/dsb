@@ -1,7 +1,9 @@
-library(tidyr)
-library(ggplot2)
-library(dplyr)
-library(data.table)
+# Make predictions of Systole and Diastole for all datasets.
+# Uses "segments-classified.csv" to create a model to help find LV segments, then filters and
+# aggregates the segment data to have one set of meta-info per ID. Combines this with the 
+# train set to create a model for the Systole and Diastole volumes.
+
+source("util.R")
 
 imageData <- fread('imageData.csv')
 imageData$Id <- factor(imageData$Id,levels=sort(unique(imageData$Id)))

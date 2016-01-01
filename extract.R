@@ -1,43 +1,8 @@
-# http://www.r-bloggers.com/r-image-analysis-using-ebimage/
-# http://www.bioconductor.org/packages/release/bioc/vignettes/EBImage/inst/doc/EBImage-introduction.html
+# Extract all potentially relevant segments from all images
+# and write these with all meta info into "segments-<dataset>.csv"
+# for later consumption by prediction code.
 
-# source("http://bioconductor.org/biocLite.R")
-# biocLite("EBImage")
-
-require('EBImage')
-require('oro.dicom')
-library(tidyr)
-library(data.table)
-library(ggplot2)
-library(dplyr)
-library(xgboost)
-
-pos2coord<-function(pos=NULL, coord=NULL, dim.mat=NULL){
-  if(is.null(pos) & is.null(coord) | is.null(dim.mat)){
-    stop("must supply either 'pos' or 'coord', and 'dim.mat'")
-  }
-  if(is.null(pos) & !is.null(coord) & !is.null(dim.mat)){
-    pos <- ((coord[,2]-1)*dim.mat[1])+coord[,1] 
-    return(pos)
-  }
-  if(!is.null(pos) & is.null(coord) & !is.null(dim.mat)){
-    coord <- matrix(NA, nrow=length(pos), ncol=2)
-    coord[,1] <- ((pos-1) %% dim.mat[1]) +1
-    coord[,2] <- ((pos-1) %/% dim.mat[1]) +1
-    return(coord)
-  }
-}
-
-readInteger <- function(p = "Enter an integer: ")
-{ 
-  n <- readline(prompt=p)
-  if(!grepl("^[0-9]+$",n))
-  {
-    return(readInteger(p))
-  }
-  
-  return(as.integer(n))
-}
+source("util.R")
 
 # after systole = min
 # after diastole = max
@@ -159,6 +124,9 @@ segmentImagesForOneSlice <- function(imgMetaData) {
     segmentInfo$dist <- sqrt((segmentInfo$m.cx - roi$m.cx)^2 + (segmentInfo$m.cy - roi$m.cy)^2)
     segmentInfo$imgIndex <- i
     segmentInfo$segIndex <- 1:nrow(segmentInfo)
+    segmentInfo$UUID <- sapply(1:nrow(segmentInfo),UUIDgenerate) # unique ID for each segment
+    
+    # Only keep segments inside the ROI
     segmentInfo <- filter(segmentInfo, dist < roi$radius)
     
     if (is.null(sliceSegmentation)) {
@@ -209,49 +177,6 @@ processSegmentedImagesForOneSlice <- function(segmentedImages)
   }
 }
 
-identifyLV <- function(as) {
-  # identify segment of LV
-  # take the middle slice, figure out which segment is the LV
-  # find 
-  slices <- unique(as$Slice) # TODO perhaps process in better order
-  
-  for (s in slices) {
-    filez <-  unique(filter(as, Slice==s)$file)
-    imgz <- list()
-    for (f in filez) {
-      dicom <- readDICOMFile(f)
-      img <- Image(normalize(dicom$img))
-      if (dim(img)[1] > dim(img)[2]) {
-        img <- rotate(img,-90)
-      }
-      imgz[[f]] <- img
-    }
-    EBImage::display(EBImage::combine(imgz),all=T,method="raster")
-    text(500,40,paste("Slice",s),col="yellow",pos=4)
-    
-    # show segments in 1st image
-    firstImage <- filter(as, Slice==s, file==filez[1])
-    for (i in 1:nrow(firstImage)) {
-      text(x = firstImage$m.cx[i], y = firstImage$m.cy[i], 
-           label = firstImage$segIndex[i], col = "orange")
-    }
-    
-    # if train mode
-    # display individual image
-    # if prediction data available, predict isLV for each of these segments
-    # show segment numbers in predicted order
-    # get user input, which is LV
-    # record actuals, and save as again
-  }  
-  
-  # discard others
-  # create aggregate info for all slices/all images
-}
-
-as <- fread("allSegmentationInfo_80.csv")
-identifyLV(as)
-stop()
-
 processImagesForOneId <- function(Id, imgMetaData, sliceDistance, sliceAreaMultiplier) {
   allSegmentationInfo <- NULL
   for (slice in unique(imgMetaData$Slice)) {
@@ -264,16 +189,16 @@ processImagesForOneId <- function(Id, imgMetaData, sliceDistance, sliceAreaMulti
     } else {
       allSegmentationInfo <- rbind(allSegmentationInfo, sliceSegmentationInfo)
     }
-    write.csv(allSegmentationInfo, paste("allSegmentationInfo_", Id, ".csv", sep=""), row.names=F)
   }
-  identifyLV(allSegmentationInfo)
+  return(allSegmentationInfo)
 }
 
 for (dataset in c('train','validate','test')) {
   datasetDir <- paste("data",dataset,sep="/")
   if (dir.exists(datasetDir)) {
     Ids <- as.integer(list.dirs(datasetDir, recursive=F, full.names=F))
-    for (Id in sample(Ids, length(Ids))) {
+    allSegInfo <- NULL
+    for (Id in Ids)) {
       IdFolder <- paste(datasetDir, Id, "study", sep="/")
       imgMetaData <- processSingleId(Id, IdFolder)
       
@@ -292,247 +217,251 @@ for (dataset in c('train','validate','test')) {
       cat("Slice distance: ", sliceDistance, fill=T)
       cat("Slice area multiplier: ", sliceAreaMultiplier, fill=T)
       
-      processImagesForOneId(Id, imgMetaData, sliceDistance, sliceAreaMultiplier)
+      segInfo <- processImagesForOneId(Id, imgMetaData, sliceDistance, sliceAreaMultiplier)
+      segInfo$sliceDistance <- sliceDistance
+      segInfo$sliceAreaMultiplier <- sliceAreaMultiplier
       
+      if (is.null(allSegInfo)) {
+        allSegInfo <- segInfo
+      } else {
+        allSegInfo <- rbind(allSegInfo, segInfo)
+      }
+      write.csv(allSegInfo, paste("segments-",dataset,".csv",sep=""), row.names=F)
     }
   }
 }
 
-stop("Parsing files")
-
-stop("Oude code hieronder")
-
-imageData <- NULL
-
-for (dataset in c('train','validate','test')) {
-  datasetDir <- paste("data",dataset,sep="/")
-  if (dir.exists(datasetDir)) {
-    IdFolders <- list.dirs(datasetDir, recursive=F, full.names=F)
-    for (Id in sample(IdFolders, length(IdFolders))) {
-      #   print(IdFolder) # = nr 1 .. 500
-      IdFolder <- paste(datasetDir, Id, "study", sep="/")
-      
-      serieFolders <- list.dirs(IdFolder, recursive=F, full.names=F)
-      # NB excluding the 2 chamber and 4 chamber views here, only the short axis track
-      serieFolders <- serieFolders[ grepl("sax_[[:digit:]]+$", serieFolders) ]
-      
-      for (serieFolder in sample(serieFolders, length(serieFolders))) { 
-        # serieFolder <- 'data/train/500/study/sax_22'
-        imgFolder <- paste(IdFolder, serieFolder, sep="/")
-        
-        print("Processing:")
-        print(imgFolder)
-        
-        seriesImageFiles <- list.files(imgFolder, pattern=".*dcm$")
-        
-        allSegments <- NULL
-        for (imgNumber in 1:length(seriesImageFiles)) {
-          f <- seriesImageFiles[imgNumber]
-          fname <- paste(imgFolder, f, sep="/")
-          
-          print(fname)
-          
-          dicom <- readDICOMFile(fname)
-          
-          
-          # read meta info
-          # see _read_all_dicom_images
-          # in https://www.kaggle.com/c/second-annual-data-science-bowl/details/fourier-based-tutorial
-          #           x <- readDICOMFile(fname)
-          #           pixelSpacing <- extractHeader(x$hdr, "PixelSpacing", numeric=FALSE)
-          #           pSmat <- header2matrix(pixelSpacing, ncol=2)
-          #           IOP <- extractHeader(x$hdr, "ImageOrientationPatient", numeric=FALSE)
-          #           IOPmat <- header2matrix(IOP, ncol=6)
-          
-          
-          
-          
-          img <- Image(normalize(dicom$img))
-          img <- rotate(img,-90)
-          # display(img, method = "raster")
-          
-          img_thresholded <- img > otsu(img) # Otsu’s threshold 
-          img_denoised <- medianFilter(img_thresholded, 4)
-          img_segmented <- fillHull(bwlabel(img_denoised))
-          img_comb = EBImage::combine(
-            colorLabels(img_segmented), # TODO try preserve colours
-            toRGB(img),
-            toRGB(img_thresholded),
-            toRGB(img_denoised)
-          )
-          
-          display(img_comb, title=imgFolder, all=T,method="raster")
-          #           for (i in 1:max(img_segmented)) {
-          #             coords <- as.data.frame(pos2coord(pos=which(img_segmented==i),dim.mat=dim(img_segmented)))
-          #             names(coords) <- c('x','y')
-          #             text(x = mean(coords$x), y = mean(coords$y), label = i, col = "orange")
-          #           }
-          
-          # Calculate image features. EBImage does a good job at this, see doc
-          # https://www.bioconductor.org/packages/3.3/bioc/manuals/EBImage/man/EBImage.pdf
-          # shape factors https://en.wikipedia.org/wiki/Shape_factor_(image_analysis_and_microscopy)
-          # http://www.cs.uu.nl/docs/vakken/ibv/reader/chapter8.pdf
-          segments <- cbind(as.data.frame(computeFeatures.shape(img_segmented)), 
-                            as.data.frame(computeFeatures.moment(img_segmented)))
-          # TODO basic, haralick, ..?
-          segments <- dplyr::filter(segments, s.area > 10) # early filter to remove small patches
-          segments$roundness <- 4*pi*segments$s.area/(segments$s.perimeter^2)
-          #           segments$compactness <- 1/segments$roundness
-          segments$segmentNumber <- 1:nrow(segments)
-          segments$imgNumber <- imgNumber
-          
-          if (is.null(allSegments)) {
-            allSegments <- segments
-            maxSegmentNumber <- max(allSegments$segmentNumber)
-          } else {
-            for (i in 1:nrow(segments)) {
-              # find previous segments at approx the same position
-              distance <- sqrt((segments$m.cx[i] - allSegments$m.cx)^2 + (segments$m.cy[i] - allSegments$m.cy)^2)
-              #               candidates <- which(distance < 10) # etc.
-              a <- which.min(distance)
-              if (distance[a] < 10 ){
-                segments$segmentNumber[i] <- allSegments$segmentNumber[a]
-              } else {
-                maxSegmentNumber <- maxSegmentNumber+1
-                segments$segmentNumber[i] <- maxSegmentNumber
-              }
-            }
-            allSegments <- rbind(allSegments, segments)
-            for (i in 1:nrow(segments)) {
-              text(x = segments$m.cx[i], y = segments$m.cy[i], 
-                   label = segments$segmentNumber[i], col = "orange")
-            }
-          } # segments of one image
-        } # images
-        allSegments$segmentNumber <- as.integer(allSegments$segmentNumber)
-        
-        # Now try figure out which image segment is the one of interest
-        # must be large and small, maybe also filter on size or roundness
-        #         largeSegments <- unique(filter(allSegments, s.area>400)$segmentNumber)
-        #         smallSegments <- filter(allSegments, s.area<300)
-        #         candidateSegments <- intersect(largeSegments, smallSegments)
-        #         candidateSegments <- (group_by(allSegments, segmentNumber) %>% 
-        #                                 summarise(size_variance = sd(s.area)) %>% arrange(desc(size_variance)) %>% ungroup() %>% 
-        #                                 mutate(size_variance_scaled=scale(size_variance)) %>% filter(size_variance_scaled > 1))$segmentNumber
-        #         candidateSegments <- unique(allSegments$segmentNumber)
-        
-        data_aggregatedAllCandidateSegments <- NULL
-        for (s in unique(allSegments$segmentNumber)) {
-          data_candidateSegment <- filter(allSegments, segmentNumber == s) %>% 
-            select(-segmentNumber, -imgNumber, -m.cx, -m.cy)
-          
-          data_mean <- sapply(data_candidateSegment, mean)
-          names(data_mean) <- paste(names(data_candidateSegment), "mean", sep="_")
-          
-          data_sd <- sapply(data_candidateSegment, sd)
-          names(data_sd) <- paste(names(data_candidateSegment), "sd", sep="_")
-          
-          data_quantiles <- sapply(data_candidateSegment, quantile, probs=c(0.1,0.5,0.9))
-          data_p10 <- data_quantiles[1,]
-          names(data_p10) <- paste(names(data_candidateSegment), "p10", sep="_")
-          data_p50 <- data_quantiles[2,]
-          names(data_p50) <- paste(names(data_candidateSegment), "p50", sep="_")
-          data_p90 <- data_quantiles[3,]
-          names(data_p90) <- paste(names(data_candidateSegment), "p90", sep="_")
-          
-          data_aggregatedCandidateSegment <- c(segmentNumber=s, 
-                                               data_mean, data_sd, data_p10, data_p50, data_p90,
-                                               img_present = nrow(data_candidateSegment))
-          
-          if (is.null(data_aggregatedAllCandidateSegments)) {
-            data_aggregatedAllCandidateSegments <- as.data.frame(t(data_aggregatedCandidateSegment))
-          } else {
-            # only happens when there are multiple candidates
-            data_aggregatedAllCandidateSegments <- rbind(data_aggregatedAllCandidateSegments,t(data_aggregatedCandidateSegment))
-          }
-        }
-        # Add meta-info about the segments
-        if (nrow(data_aggregatedAllCandidateSegments) >= 1) {
-          row.names(data_aggregatedAllCandidateSegments) <- 1:nrow(data_aggregatedAllCandidateSegments)
-          data_aggregatedAllCandidateSegments$dataset <- dataset
-          data_aggregatedAllCandidateSegments$Id <- as.integer(Id)
-          data_aggregatedAllCandidateSegments$series <- serieFolder
-          data_aggregatedAllCandidateSegments$series_idx <- which(serieFolder == serieFolders)
-          data_aggregatedAllCandidateSegments$series_cnt <- length(serieFolders)
-          data_aggregatedAllCandidateSegments$img_cnt <- length(seriesImageFiles)
-        }
-        
-        # Perhaps threshold prediciton at 0.50 - if so, then assume yes
-        # or, 10 x next one up
-        
-        # Make prediction of Left Ventricle segment using previous data
-        segmentsInBestOrder <- data_aggregatedAllCandidateSegments$segmentNumber
-        if (file.exists('imageData.csv')) {
-          segData <- fread('imageData.csv', 
-                           drop=c('segmentNumber', 'dataset', 'Id', 'series', 'series_idx', 'series_cnt'))
-          if ('isLeftVentricle' %in% names(segData)) {
-            trainData <- select(segData, -isLeftVentricle)
-            bst <- xgboost(data = as.matrix(trainData), 
-                           label = segData$isLeftVentricle, 
-                           max.depth = 8, eta = 0.1, nround = 100,
-                           objective = "binary:logistic", missing=NaN, verbose=0)
-            imp_matrix <- xgb.importance(feature_names = names(trainData), model = bst)
-            print(xgb.plot.importance(importance_matrix = imp_matrix))
-            newData <- select(data_aggregatedAllCandidateSegments, -segmentNumber, -dataset, -Id, -series, -series_idx, -series_cnt)
-            pred <- predict(bst, as.matrix(newData), missing=NaN)
-            orderedPreds <- arrange(data.frame(segment=data_aggregatedAllCandidateSegments$segmentNumber, 
-                                               prob=pred), desc(prob))
-            print(head(orderedPreds))
-            segmentsInBestOrder <- orderedPreds$segment
-          }
-        }
-        print(segmentsInBestOrder)
-        leftVentricleSegment <- readInteger("Enter the segment number of the left ventricle (0 = none):")
-        cat("Segment = ", leftVentricleSegment, fill=T)
-        
-        # TODO create a model using the aggregates (min/max/mean/sd etc) of:
-        # "s.area"         "s.perimeter"    "s.radius.mean"  "s.radius.sd"    "s.radius.min"   "s.radius.max"  
-        # "m.eccentricity" "roundness"
-        
-        
-        data_aggregatedAllCandidateSegments$isLeftVentricle <- 
-          data_aggregatedAllCandidateSegments$segmentNumber == leftVentricleSegment        
-        
-        if (F) { # nrow(data_aggregatedAllCandidateSegments) > 1
-          cat("*** Identified multiple segments:",candidateSegments,fill=T)
-          
-          data_scaled <- as.data.frame(cbind(scale(allSegments[,sapply(allSegments,class) == "numeric"]),
-                                             allSegments[,sapply(allSegments,class) != "numeric"]))
-          plotData <- filter(data_scaled, segmentNumber %in% candidateSegments) %>% 
-            select(m.eccentricity, roundness, s.area, segmentNumber, imgNumber) %>%
-            gather(Feature, Value, -segmentNumber, -imgNumber)
-          print(ggplot(data=plotData, aes(x=imgNumber, y=Value, linetype=Feature, color=factor(segmentNumber)))+geom_line()+
-                  ggtitle(paste("Segments in",imgFolder)))
-          
-          bestIndex <- which.min(data_aggregatedAllCandidateSegments$roundness_sd)
-          bestCandidateSegment <- data_aggregatedAllCandidateSegments$segmentNumber[bestIndex]
-          cat("*** Selecting segment with smallest variation in roundness:",bestCandidateSegment,fill=T)
-          #           print(data_aggregatedAllCandidateSegments)
-          
-          data_aggregatedAllCandidateSegments <- data_aggregatedAllCandidateSegments[bestIndex,]
-          candidateSegments <- bestCandidateSegment
-          
-        }
-        
-        if (T) { # length(candidateSegments) == 1
-          #           cat("*** Identified segment:",candidateSegments,fill=T)
-          if (is.null(imageData)) {
-            imageData <- data_aggregatedAllCandidateSegments
-          } else {
-            imageData <- rbind(imageData, data_aggregatedAllCandidateSegments)
-          }
-        } else {
-          print(ggplot(data=allSegments, aes(x=imgNumber, y=s.area, colour=factor(segmentNumber)))+geom_line()+
-                  ggtitle(paste("All segments in", imgFolder)))
-          
-          cat("*** No segment identified in", imgFolder, fill=T)
-        }
-        write.csv(imageData, 'imageData.csv', row.names=F, quote=F)
-      } # for serie (sax_nnn etc) 
-      # TODO consider merge with existing data?
-    } # for Id
-  } else {
-    cat("No dataset in", datasetDir, fill=T)
-  }
-} # for dataset (train/validate/test)
+# imageData <- NULL
+# 
+# for (dataset in c('train','validate','test')) {
+#   datasetDir <- paste("data",dataset,sep="/")
+#   if (dir.exists(datasetDir)) {
+#     IdFolders <- list.dirs(datasetDir, recursive=F, full.names=F)
+#     for (Id in sample(IdFolders, length(IdFolders))) {
+#       #   print(IdFolder) # = nr 1 .. 500
+#       IdFolder <- paste(datasetDir, Id, "study", sep="/")
+#       
+#       serieFolders <- list.dirs(IdFolder, recursive=F, full.names=F)
+#       # NB excluding the 2 chamber and 4 chamber views here, only the short axis track
+#       serieFolders <- serieFolders[ grepl("sax_[[:digit:]]+$", serieFolders) ]
+#       
+#       for (serieFolder in sample(serieFolders, length(serieFolders))) { 
+#         # serieFolder <- 'data/train/500/study/sax_22'
+#         imgFolder <- paste(IdFolder, serieFolder, sep="/")
+#         
+#         print("Processing:")
+#         print(imgFolder)
+#         
+#         seriesImageFiles <- list.files(imgFolder, pattern=".*dcm$")
+#         
+#         allSegments <- NULL
+#         for (imgNumber in 1:length(seriesImageFiles)) {
+#           f <- seriesImageFiles[imgNumber]
+#           fname <- paste(imgFolder, f, sep="/")
+#           
+#           print(fname)
+#           
+#           dicom <- readDICOMFile(fname)
+#           
+#           
+#           # read meta info
+#           # see _read_all_dicom_images
+#           # in https://www.kaggle.com/c/second-annual-data-science-bowl/details/fourier-based-tutorial
+#           #           x <- readDICOMFile(fname)
+#           #           pixelSpacing <- extractHeader(x$hdr, "PixelSpacing", numeric=FALSE)
+#           #           pSmat <- header2matrix(pixelSpacing, ncol=2)
+#           #           IOP <- extractHeader(x$hdr, "ImageOrientationPatient", numeric=FALSE)
+#           #           IOPmat <- header2matrix(IOP, ncol=6)
+#           
+#           
+#           
+#           
+#           img <- Image(normalize(dicom$img))
+#           img <- rotate(img,-90)
+#           # display(img, method = "raster")
+#           
+#           img_thresholded <- img > otsu(img) # Otsu’s threshold 
+#           img_denoised <- medianFilter(img_thresholded, 4)
+#           img_segmented <- fillHull(bwlabel(img_denoised))
+#           img_comb = EBImage::combine(
+#             colorLabels(img_segmented), # TODO try preserve colours
+#             toRGB(img),
+#             toRGB(img_thresholded),
+#             toRGB(img_denoised)
+#           )
+#           
+#           display(img_comb, title=imgFolder, all=T,method="raster")
+#           #           for (i in 1:max(img_segmented)) {
+#           #             coords <- as.data.frame(pos2coord(pos=which(img_segmented==i),dim.mat=dim(img_segmented)))
+#           #             names(coords) <- c('x','y')
+#           #             text(x = mean(coords$x), y = mean(coords$y), label = i, col = "orange")
+#           #           }
+#           
+#           # Calculate image features. EBImage does a good job at this, see doc
+#           # https://www.bioconductor.org/packages/3.3/bioc/manuals/EBImage/man/EBImage.pdf
+#           # shape factors https://en.wikipedia.org/wiki/Shape_factor_(image_analysis_and_microscopy)
+#           # http://www.cs.uu.nl/docs/vakken/ibv/reader/chapter8.pdf
+#           segments <- cbind(as.data.frame(computeFeatures.shape(img_segmented)), 
+#                             as.data.frame(computeFeatures.moment(img_segmented)))
+#           # TODO basic, haralick, ..?
+#           segments <- dplyr::filter(segments, s.area > 10) # early filter to remove small patches
+#           segments$roundness <- 4*pi*segments$s.area/(segments$s.perimeter^2)
+#           #           segments$compactness <- 1/segments$roundness
+#           segments$segmentNumber <- 1:nrow(segments)
+#           segments$imgNumber <- imgNumber
+#           
+#           if (is.null(allSegments)) {
+#             allSegments <- segments
+#             maxSegmentNumber <- max(allSegments$segmentNumber)
+#           } else {
+#             for (i in 1:nrow(segments)) {
+#               # find previous segments at approx the same position
+#               distance <- sqrt((segments$m.cx[i] - allSegments$m.cx)^2 + (segments$m.cy[i] - allSegments$m.cy)^2)
+#               #               candidates <- which(distance < 10) # etc.
+#               a <- which.min(distance)
+#               if (distance[a] < 10 ){
+#                 segments$segmentNumber[i] <- allSegments$segmentNumber[a]
+#               } else {
+#                 maxSegmentNumber <- maxSegmentNumber+1
+#                 segments$segmentNumber[i] <- maxSegmentNumber
+#               }
+#             }
+#             allSegments <- rbind(allSegments, segments)
+#             for (i in 1:nrow(segments)) {
+#               text(x = segments$m.cx[i], y = segments$m.cy[i], 
+#                    label = segments$segmentNumber[i], col = "orange")
+#             }
+#           } # segments of one image
+#         } # images
+#         allSegments$segmentNumber <- as.integer(allSegments$segmentNumber)
+#         
+#         # Now try figure out which image segment is the one of interest
+#         # must be large and small, maybe also filter on size or roundness
+#         #         largeSegments <- unique(filter(allSegments, s.area>400)$segmentNumber)
+#         #         smallSegments <- filter(allSegments, s.area<300)
+#         #         candidateSegments <- intersect(largeSegments, smallSegments)
+#         #         candidateSegments <- (group_by(allSegments, segmentNumber) %>% 
+#         #                                 summarise(size_variance = sd(s.area)) %>% arrange(desc(size_variance)) %>% ungroup() %>% 
+#         #                                 mutate(size_variance_scaled=scale(size_variance)) %>% filter(size_variance_scaled > 1))$segmentNumber
+#         #         candidateSegments <- unique(allSegments$segmentNumber)
+#         
+#         data_aggregatedAllCandidateSegments <- NULL
+#         for (s in unique(allSegments$segmentNumber)) {
+#           data_candidateSegment <- filter(allSegments, segmentNumber == s) %>% 
+#             select(-segmentNumber, -imgNumber, -m.cx, -m.cy)
+#           
+#           data_mean <- sapply(data_candidateSegment, mean)
+#           names(data_mean) <- paste(names(data_candidateSegment), "mean", sep="_")
+#           
+#           data_sd <- sapply(data_candidateSegment, sd)
+#           names(data_sd) <- paste(names(data_candidateSegment), "sd", sep="_")
+#           
+#           data_quantiles <- sapply(data_candidateSegment, quantile, probs=c(0.1,0.5,0.9))
+#           data_p10 <- data_quantiles[1,]
+#           names(data_p10) <- paste(names(data_candidateSegment), "p10", sep="_")
+#           data_p50 <- data_quantiles[2,]
+#           names(data_p50) <- paste(names(data_candidateSegment), "p50", sep="_")
+#           data_p90 <- data_quantiles[3,]
+#           names(data_p90) <- paste(names(data_candidateSegment), "p90", sep="_")
+#           
+#           data_aggregatedCandidateSegment <- c(segmentNumber=s, 
+#                                                data_mean, data_sd, data_p10, data_p50, data_p90,
+#                                                img_present = nrow(data_candidateSegment))
+#           
+#           if (is.null(data_aggregatedAllCandidateSegments)) {
+#             data_aggregatedAllCandidateSegments <- as.data.frame(t(data_aggregatedCandidateSegment))
+#           } else {
+#             # only happens when there are multiple candidates
+#             data_aggregatedAllCandidateSegments <- rbind(data_aggregatedAllCandidateSegments,t(data_aggregatedCandidateSegment))
+#           }
+#         }
+#         # Add meta-info about the segments
+#         if (nrow(data_aggregatedAllCandidateSegments) >= 1) {
+#           row.names(data_aggregatedAllCandidateSegments) <- 1:nrow(data_aggregatedAllCandidateSegments)
+#           data_aggregatedAllCandidateSegments$dataset <- dataset
+#           data_aggregatedAllCandidateSegments$Id <- as.integer(Id)
+#           data_aggregatedAllCandidateSegments$series <- serieFolder
+#           data_aggregatedAllCandidateSegments$series_idx <- which(serieFolder == serieFolders)
+#           data_aggregatedAllCandidateSegments$series_cnt <- length(serieFolders)
+#           data_aggregatedAllCandidateSegments$img_cnt <- length(seriesImageFiles)
+#         }
+#         
+#         # Perhaps threshold prediciton at 0.50 - if so, then assume yes
+#         # or, 10 x next one up
+#         
+#         # Make prediction of Left Ventricle segment using previous data
+#         segmentsInBestOrder <- data_aggregatedAllCandidateSegments$segmentNumber
+#         if (file.exists('imageData.csv')) {
+#           segData <- fread('imageData.csv', 
+#                            drop=c('segmentNumber', 'dataset', 'Id', 'series', 'series_idx', 'series_cnt'))
+#           if ('isLeftVentricle' %in% names(segData)) {
+#             trainData <- select(segData, -isLeftVentricle)
+#             bst <- xgboost(data = as.matrix(trainData), 
+#                            label = segData$isLeftVentricle, 
+#                            max.depth = 8, eta = 0.1, nround = 100,
+#                            objective = "binary:logistic", missing=NaN, verbose=0)
+#             imp_matrix <- xgb.importance(feature_names = names(trainData), model = bst)
+#             print(xgb.plot.importance(importance_matrix = imp_matrix))
+#             newData <- select(data_aggregatedAllCandidateSegments, -segmentNumber, -dataset, -Id, -series, -series_idx, -series_cnt)
+#             pred <- predict(bst, as.matrix(newData), missing=NaN)
+#             orderedPreds <- arrange(data.frame(segment=data_aggregatedAllCandidateSegments$segmentNumber, 
+#                                                prob=pred), desc(prob))
+#             print(head(orderedPreds))
+#             segmentsInBestOrder <- orderedPreds$segment
+#           }
+#         }
+#         print(segmentsInBestOrder)
+#         leftVentricleSegment <- readInteger("Enter the segment number of the left ventricle (0 = none):")
+#         cat("Segment = ", leftVentricleSegment, fill=T)
+#         
+#         # TODO create a model using the aggregates (min/max/mean/sd etc) of:
+#         # "s.area"         "s.perimeter"    "s.radius.mean"  "s.radius.sd"    "s.radius.min"   "s.radius.max"  
+#         # "m.eccentricity" "roundness"
+#         
+#         
+#         data_aggregatedAllCandidateSegments$isLeftVentricle <- 
+#           data_aggregatedAllCandidateSegments$segmentNumber == leftVentricleSegment        
+#         
+#         if (F) { # nrow(data_aggregatedAllCandidateSegments) > 1
+#           cat("*** Identified multiple segments:",candidateSegments,fill=T)
+#           
+#           data_scaled <- as.data.frame(cbind(scale(allSegments[,sapply(allSegments,class) == "numeric"]),
+#                                              allSegments[,sapply(allSegments,class) != "numeric"]))
+#           plotData <- filter(data_scaled, segmentNumber %in% candidateSegments) %>% 
+#             select(m.eccentricity, roundness, s.area, segmentNumber, imgNumber) %>%
+#             gather(Feature, Value, -segmentNumber, -imgNumber)
+#           print(ggplot(data=plotData, aes(x=imgNumber, y=Value, linetype=Feature, color=factor(segmentNumber)))+geom_line()+
+#                   ggtitle(paste("Segments in",imgFolder)))
+#           
+#           bestIndex <- which.min(data_aggregatedAllCandidateSegments$roundness_sd)
+#           bestCandidateSegment <- data_aggregatedAllCandidateSegments$segmentNumber[bestIndex]
+#           cat("*** Selecting segment with smallest variation in roundness:",bestCandidateSegment,fill=T)
+#           #           print(data_aggregatedAllCandidateSegments)
+#           
+#           data_aggregatedAllCandidateSegments <- data_aggregatedAllCandidateSegments[bestIndex,]
+#           candidateSegments <- bestCandidateSegment
+#           
+#         }
+#         
+#         if (T) { # length(candidateSegments) == 1
+#           #           cat("*** Identified segment:",candidateSegments,fill=T)
+#           if (is.null(imageData)) {
+#             imageData <- data_aggregatedAllCandidateSegments
+#           } else {
+#             imageData <- rbind(imageData, data_aggregatedAllCandidateSegments)
+#           }
+#         } else {
+#           print(ggplot(data=allSegments, aes(x=imgNumber, y=s.area, colour=factor(segmentNumber)))+geom_line()+
+#                   ggtitle(paste("All segments in", imgFolder)))
+#           
+#           cat("*** No segment identified in", imgFolder, fill=T)
+#         }
+#         write.csv(imageData, 'imageData.csv', row.names=F, quote=F)
+#       } # for serie (sax_nnn etc) 
+#       # TODO consider merge with existing data?
+#     } # for Id
+#   } else {
+#     cat("No dataset in", datasetDir, fill=T)
+#   }
+# } # for dataset (train/validate/test)
 
