@@ -1,6 +1,9 @@
-# Extract all potentially relevant segments from all images
+# Extract all potentially relevant info from segments from all images
 # and write these with all meta info into "segments-<dataset>.csv"
 # for later consumption by prediction code.
+
+# TODO: pick up images first that have not yet been processed and append
+# (unless names have changed)
 
 source("util.R")
 
@@ -88,9 +91,9 @@ segmentImagesForOneSlice <- function(imgMetaData) {
     roi = as.data.frame(computeFeatures.moment(img_roi))
     coords <- as.data.frame(pos2coord(pos=which(img_roi>0),dim.mat=dim(img_roi)))
     names(coords) <- c('x','y')
-    coords$dist <- floor(sqrt((coords$x - roi$m.cx)^2+(coords$y - roi$m.cy)^2))
-    roi$radius <- quantile(coords$dist, probs=c(0.95))
-    #     print(qplot(coords$dist, stat = "ecdf", geom = "step")+
+    coords$distToROI <- floor(sqrt((coords$x - roi$m.cx)^2+(coords$y - roi$m.cy)^2))
+    roi$radius <- quantile(coords$distToROI, probs=c(0.95))
+    #     print(qplot(coords$distToROI, stat = "ecdf", geom = "step")+
     #             geom_vline(xintercept=roi$radius))
     
     #roi_mask <- matrix(0, nrow=dim(img_roi)[1], ncol=dim(img_roi)[2])
@@ -121,13 +124,13 @@ segmentImagesForOneSlice <- function(imgMetaData) {
                          data.frame(computeFeatures.moment(img_segmented)),
                          data.frame(computeFeatures.shape(img_segmented)))
     segmentInfo$roundness <- 4*pi*segmentInfo$s.area/(segmentInfo$s.perimeter^2)
-    segmentInfo$dist <- sqrt((segmentInfo$m.cx - roi$m.cx)^2 + (segmentInfo$m.cy - roi$m.cy)^2)
-    segmentInfo$imgIndex <- i
+    segmentInfo$distToROI <- sqrt((segmentInfo$m.cx - roi$m.cx)^2 + (segmentInfo$m.cy - roi$m.cy)^2)
+#     segmentInfo$imgIndex <- i # same as Time
     segmentInfo$segIndex <- 1:nrow(segmentInfo)
     segmentInfo$UUID <- sapply(1:nrow(segmentInfo),UUIDgenerate) # unique ID for each segment
     
     # Only keep segments inside the ROI
-    segmentInfo <- filter(segmentInfo, dist < roi$radius)
+    segmentInfo <- filter(segmentInfo, distToROI < roi$radius)
     
     if (is.null(sliceSegmentation)) {
       sliceSegmentation <- segmentInfo
@@ -198,7 +201,7 @@ for (dataset in c('train','validate','test')) {
   if (dir.exists(datasetDir)) {
     Ids <- as.integer(list.dirs(datasetDir, recursive=F, full.names=F))
     allSegInfo <- NULL
-    for (Id in Ids)) {
+    for (Id in Ids) {
       IdFolder <- paste(datasetDir, Id, "study", sep="/")
       imgMetaData <- processSingleId(Id, IdFolder)
       
@@ -214,12 +217,14 @@ for (dataset in c('train','validate','test')) {
         sliceDistance <- 8 # fall back scenario
       }
       sliceAreaMultiplier <- sliceData$pixelSpacing.x[1]*sliceData$pixelSpacing.y[1]
+      # TODO: slide area multiplier not always available - eg validation case 516
+      # fall back to average of others or to 2 hardcoded
       cat("Slice distance: ", sliceDistance, fill=T)
       cat("Slice area multiplier: ", sliceAreaMultiplier, fill=T)
       
       segInfo <- processImagesForOneId(Id, imgMetaData, sliceDistance, sliceAreaMultiplier)
-      segInfo$sliceDistance <- sliceDistance
-      segInfo$sliceAreaMultiplier <- sliceAreaMultiplier
+      segInfo$sliceArea <- segInfo$s.area*sliceAreaMultiplier
+      segInfo$sliceVolume <- segInfo$sliceArea*sliceDistance
       
       if (is.null(allSegInfo)) {
         allSegInfo <- segInfo
