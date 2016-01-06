@@ -40,3 +40,40 @@ readInteger <- function(p = "Enter an integer: ")
   
   return(as.integer(n))
 }
+
+datasetFolders <- c('train','validate','test')
+
+# create mid-ordered sequence
+midOrderSeq <- function(n) {
+  abs(n %/% 2 + 1 - seq(n))*2 - ((1+sign(n %/% 2 + 1 - seq(n)))%/%2) + 1
+}
+
+# Extension of above so that there are always pairs of slices present
+midOrderSeqKeepSibblingsTogether <- function(n) {
+  s <- abs((seq(n)-(n%/%2))%/%2)+1
+  if (length(s) > 1) {
+    s[1] <- s[2]
+    s[length(s)] <- s[length(s)-1]
+  }
+  return(s)
+}
+
+getSegmentFile <- function(ds) {
+  paste("segments-",ds,".csv",sep="")
+}
+
+getImageFolder <- function(entry) {
+  paste("data",
+        entry$Dataset,
+        entry$Id,
+        "study",
+        paste(entry$ImgType, entry$Slice, sep="_"),
+        sep="/")  
+}
+
+getImageFile <- function(entry) {
+  paste(getImageFolder(entry), 
+        paste("IM-",sprintf("%04d",entry$Offset),"-",sprintf("%04d",entry$Time),".dcm",sep=""),
+        sep="/")
+}
+

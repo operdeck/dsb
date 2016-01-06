@@ -7,27 +7,6 @@
 
 source("util.R")
 
-datasetFolders <- c('train','validate','test')
-
-# create mid-ordered sequence
-midOrderSeq <- function(n) {
-  abs(n %/% 2 + 1 - seq(n))*2 - ((1+sign(n %/% 2 + 1 - seq(n)))%/%2) + 1
-}
-
-# Extension of above so that there are always pairs of slices present
-midOrderSeqKeepSibblingsTogether <- function(n) {
-  s <- as.integer(factor(abs(n %/% 2 + 1 - 2*(seq(n) %/% 2))*2 + 1))
-  if (length(s) > 1) {
-    s[1] <- s[2]
-    s[length(s)] <- s[length(s)-1]
-  }
-  return(s)
-}
-
-segmentFile <- function(ds) {
-  paste("segments-",ds,".csv",sep="")
-}
-
 # after systole = min
 # after diastole = max
 #  ejection fraction = 100 * (Vd - Vs)/Vd
@@ -41,47 +20,53 @@ segmentFile <- function(ds) {
 # http://bioconductor.wustl.edu/bioc/vignettes/EBImage/inst/doc/AnalysisWithEBImage.pdf
 
 listSliceImages <- function(sliceInfo) {
-  imgFolder <- paste("data",sliceInfo$Dataset,sliceInfo$Id,"study",
-                     paste(sliceInfo$ImgType, sliceInfo$Slice, sep="_"),sep="/")
+  imgFolder <- getImageFolder(sliceInfo)
   imgFiles <- list.files(imgFolder, pattern=".*\\.dcm$")
-  isFirstImage <- T
-  allImgMetaData <- NULL
-  for (imgFile in imgFiles) {
-    imgOffset <- as.integer(gsub("^IM-(\\d{4,})-(\\d{4})\\.dcm$", "\\1", imgFile))
-    imgTime <- as.integer(gsub("^IM-(\\d{4,})-(\\d{4})\\.dcm$", "\\2", imgFile))
-    fname <- paste(imgFolder, imgFile, sep="/")
-    if (isFirstImage) {
-      dicomHeader <- readDICOMFile(fname, pixelData = FALSE)
-      pixelSpacing <- extractHeader(dicomHeader$hdr, "PixelSpacing", numeric=FALSE)
-      isFirstImage <- F
-    }
-    imgMetaData <- data.frame(Id = sliceInfo$Id, 
-                              Dataset = sliceInfo$Dataset,
-                              ImgType = sliceInfo$ImgType,
-                              Slice = sliceInfo$Slice,
-                              SliceRelIndex = sliceInfo$SliceRelIndex,
-                              Offset = imgOffset,
-                              Time = imgTime,
-                              pixelSpacing.x = as.numeric(gsub("^(.*) (.*)$", "\\1", pixelSpacing)),
-                              pixelSpacing.y = as.numeric(gsub("^(.*) (.*)$", "\\2", pixelSpacing)),
-                              sliceLocation = extractHeader(dicomHeader$hdr, "SliceLocation", numeric=TRUE),
-                              sliceThickness = extractHeader(dicomHeader$hdr, "SliceThickness", numeric=TRUE),
-                              file = fname,
-                              stringsAsFactors = F)
-    if (is.null(allImgMetaData)) {
-      allImgMetaData <- imgMetaData
-    } else {
-      allImgMetaData <- rbind(allImgMetaData, imgMetaData)
-    }
+  allImgMetaData <- data.frame(Id = sliceInfo$Id, 
+                               Dataset = sliceInfo$Dataset,
+                               ImgType = sliceInfo$ImgType,
+                               Slice = sliceInfo$Slice,
+                               Offset = as.integer(gsub("^IM-(\\d{4,})-(\\d{4})\\.dcm$", "\\1", imgFiles)),
+                               Time = as.integer(gsub("^IM-(\\d{4,})-(\\d{4})\\.dcm$", "\\2", imgFiles)),
+                               pixelSpacing.x = rep(NA, length(imgFiles)),
+                               pixelSpacing.y = rep(NA, length(imgFiles)),
+                               sliceLocation = rep(NA, length(imgFiles)),
+                               sliceThickness = rep(NA, length(imgFiles)),
+                               stringsAsFactors = T)
+
+  if (any(is.na(allImgMetaData$Offset)) | any(is.na(allImgMetaData$Time))) {
+    print(allImgMetaData)
+    print(imgFiles)
+    print("WARN: Unexpected formats in image file")
+    return(NULL)
   }
+  if (nrow(allImgMetaData) == 0) {
+    print("WARN: No image files")
+    return(NULL)
+  }
+  # any na's for Time/Offset -> return NULL and flag unexpected file format
+  
+  # read first image and set meta info - assume it's the same for all image files
+  dicomHeader <- readDICOMFile(getImageFile(allImgMetaData[1,]), pixelData = FALSE)
+  pixelSpacing <- extractHeader(dicomHeader$hdr, "PixelSpacing", numeric=FALSE)
+
+  allImgMetaData$pixelSpacing.x <- as.numeric(gsub("^(.*) (.*)$", "\\1", pixelSpacing))
+  allImgMetaData$pixelSpacing.y <- as.numeric(gsub("^(.*) (.*)$", "\\2", pixelSpacing))
+  allImgMetaData$sliceLocation <- extractHeader(dicomHeader$hdr, "SliceLocation", numeric=TRUE)
+  allImgMetaData$sliceThickness <- extractHeader(dicomHeader$hdr, "SliceThickness", numeric=TRUE)
   
   return(allImgMetaData)
 }
 
 segmentImagesForOneSlice <- function(imgMetaData) {
   allImages <- vector(mode = "list", length = nrow(imgMetaData))
-  for (i in 1:nrow(imgMetaData)) {
-    f <- imgMetaData$file[i]
+  for (i in seq(nrow(imgMetaData))) {
+    f <- getImageFile(imgMetaData[i,])
+    if (!file.exists(f)) {
+      print(imgMetaData[i,])
+      print(f)
+      stop("File doesnt exist - formatting issues?")
+    }
     dicom <- readDICOMFile(f)
     img <- Image(normalize(dicom$img))
     if (dim(img)[1] > dim(img)[2]) {
@@ -164,7 +149,7 @@ segmentImagesForOneSlice <- function(imgMetaData) {
     }
   } # all images of one slice
   
-  return(select(sliceSegmentation, -file))
+  return(sliceSegmentation)
 }
 
 # print(segmentImagesForOneSlice(filter(imgMetaData, Slice == sort(unique(imgMetaData$Slice))[2])))
@@ -220,6 +205,7 @@ for (dataset in datasetFolders) {
                                 Dataset = dataset,
                                 ImgType = "sax",
                                 Slice = slices,
+                                SliceCount = length(slices),
                                 SliceRelIndex = seq(length(slices)),
                                 SliceOrder = midOrderSeqKeepSibblingsTogether(length(slices)),
                                 stringsAsFactors = F)
@@ -240,13 +226,16 @@ print( group_by(playlist, Dataset) %>% summarise(nCases = n()) )
 previouslyProcessedIds <- NULL
 allSegmentationInfo <- NULL
 for (dataset in datasetFolders) {
-  if (file.exists(segmentFile(dataset))) {
-    segmentsPerDataset <- fread(segmentFile(dataset))
+  if (file.exists(getSegmentFile(dataset))) {
+    segmentsPerDataset <- fread(getSegmentFile(dataset))
 
     # Only consider an ID processed if each slice has also it's sibling slice processed. This means
     # we may re-process a full ID instead of just a couple of slices.
     # If there is only 1 slice, it's ok too
-    hasSiblings <- group_by(segmentsPerDataset, Id) %>% 
+    hasSiblings <- 
+      left_join(segmentsPerDataset, # get rel index from the playlist
+                select(as.data.table(playlist), Id, Slice, SliceRelIndex)) %>%
+      group_by(Id) %>% 
       select(Id, Slice, SliceRelIndex) %>% arrange(Id) %>%
       unique() %>%
       summarise(nProcessedSlices = n(),
@@ -290,46 +279,55 @@ for (nextSlice in seq(nrow(playlist))) {
   
   # NB slice thickness etc to be derived in predict, not here
   
-  # Segment all images in this slice
-  sliceSegmentationInfo <- segmentImagesForOneSlice(imgMetaData)
-  cat("...",nrow(sliceSegmentationInfo),"segments in",nrow(imgMetaData),"images",fill=T)
-  
-  if (is.null(allSegmentationInfo)) {
-    allSegmentationInfo <- sliceSegmentationInfo
+  if (!is.null(imgMetaData)) {
+    # Segment all images in this slice
+    sliceSegmentationInfo <- segmentImagesForOneSlice(imgMetaData)
+    cat("...",nrow(sliceSegmentationInfo),"segments in",nrow(imgMetaData),"images",fill=T)
+    
+    if (is.null(allSegmentationInfo)) {
+      allSegmentationInfo <- sliceSegmentationInfo
+    } else {
+      removedSet <- setdiff(names(allSegmentationInfo), names(sliceSegmentationInfo))
+      addedSet <- setdiff(names(sliceSegmentationInfo), names(allSegmentationInfo))
+      diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
+      if (length(removedSet) + length(addedSet) > 0) {
+        print("Existing:")
+        print(names(allSegmentationInfo))
+        print("New:")
+        print(names(sliceSegmentationInfo))
+        print(paste(diffSet, collapse=","))
+        stop("Datasets do not match up. Please consider removing segment files.")
+      }
+      
+      nDrop <- nrow(filter(allSegmentationInfo, 
+                           Slice %in% sliceSegmentationInfo$Slice,
+                           Id %in% sliceSegmentationInfo$Id))
+      if (nDrop > 0) {
+        cat("...dropping",nDrop,"rows from previous results",fill=T)
+      }
+      
+      allSegmentationInfo <- rbind(filter(allSegmentationInfo, 
+                                          !(Slice %in% sliceSegmentationInfo$Slice & 
+                                              Id %in% sliceSegmentationInfo$Id)), 
+                                   sliceSegmentationInfo)
+    }
+    
+    # Add segmentation to results and write file (once in a while)
+    if (nextSlice %% 10 == 0) {
+      ds <- playlist$Dataset[nextSlice]
+      cat("...write", getSegmentFile(ds), "id's:",length(unique(filter(allSegmentationInfo, Dataset==ds)$Id)), fill=T)
+      write.csv(filter(allSegmentationInfo, Dataset==ds), getSegmentFile(ds), row.names=F)
+    }
   } else {
-    removedSet <- setdiff(names(allSegmentationInfo), names(sliceSegmentationInfo))
-    addedSet <- setdiff(names(sliceSegmentationInfo), names(allSegmentationInfo))
-    diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
-    if (length(removedSet) + length(addedSet) > 0) {
-      print("Existing:")
-      print(names(allSegmentationInfo))
-      print("New:")
-      print(names(sliceSegmentationInfo))
-      print(paste(diffSet, collapse=","))
-      stop("Datasets do not match up. Please consider removing segment files.")
-    }
-    
-    nDrop <- nrow(filter(allSegmentationInfo, 
-                         Slice %in% sliceSegmentationInfo$Slice,
-                         Id %in% sliceSegmentationInfo$Id))
-    if (nDrop > 0) {
-      cat("...dropping",nDrop,"rows from previous results",fill=T)
-    }
-    
-    allSegmentationInfo <- rbind(filter(allSegmentationInfo, 
-                                        !(Slice %in% sliceSegmentationInfo$Slice & 
-                                            Id %in% sliceSegmentationInfo$Id)), 
-                                 sliceSegmentationInfo)
-  }
-  
-  # Add segmentation to results and write file (or write once in a while)
-  for (ds in unique(allSegmentationInfo$Dataset)) {
-    cat("...write", segmentFile(ds), "id's:",length(unique(filter(allSegmentationInfo, Dataset==ds)$Id)), fill=T)
-    
-    write.csv(filter(allSegmentationInfo, Dataset==ds), segmentFile(ds), row.names=F)
+    print("...no valid image data!")
   }
 }
 
+# write final results (again, just to be sure)
+for (ds in datasetFolders) {
+  cat("Write final", getSegmentFile(ds), "id's:",length(unique(filter(allSegmentationInfo, Dataset==ds)$Id)), fill=T)
+  write.csv(filter(allSegmentationInfo, Dataset==ds), getSegmentFile(ds), row.names=F)
+}
 
 # for (dataset in datasetFolders) {
 #   datasetDir <- paste("data",dataset,sep="/")
@@ -366,7 +364,7 @@ for (nextSlice in seq(nrow(playlist))) {
 #       } else {
 #         allSegInfo <- rbind(allSegInfo, segInfo)
 #       }
-#       write.csv(allSegInfo, segmentFile(dataset), row.names=F)
+#       write.csv(allSegInfo, getSegmentFile(dataset), row.names=F)
 #     }
 #   }
 # }
