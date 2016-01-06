@@ -1,4 +1,3 @@
-
 # http://www.r-bloggers.com/r-image-analysis-using-ebimage/
 # http://www.bioconductor.org/packages/release/bioc/vignettes/EBImage/inst/doc/EBImage-introduction.html
 
@@ -76,4 +75,3 @@ getImageFile <- function(entry) {
         paste("IM-",sprintf("%04d",entry$Offset),"-",sprintf("%04d",entry$Time),".dcm",sep=""),
         sep="/")
 }
-
