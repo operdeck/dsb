@@ -5,6 +5,8 @@
 
 source("util.R")
 
+segPredictFile <- "segments-predict.csv"
+
 showSegmentLabels <- function(imageDS) {
   for (i in 1:nrow(imageDS)) {
     text(x = imageDS$m.cx[i], y = imageDS$m.cy[i], 
@@ -12,38 +14,37 @@ showSegmentLabels <- function(imageDS) {
   }
 }
 
+# Display and prompt for one slice
 showSlice <- function(ds, highlight=F) {
   #   filez <-  ds$file
   #   filez <-  unique(ds$file)
   imgz <- list()
   for (i in 1:nrow(ds)) {
-    f <- ds$file[i]
+    f <- getImageFile(ds[i,])
     dicom <- readDICOMFile(f)
     img <- Image(normalize(dicom$img))
     if (dim(img)[1] > dim(img)[2]) {
       img <- rotate(img,-90)
     }
-    
     if (!highlight & i == 1) {
-      firstImage <- filter(ds, file==ds$file[1])
-      # TODO highlight actual segmentation, not just the circles
-      for (i in 1:nrow(firstImage)) {
-        if (firstImage$s.radius.mean[i] >= 1) {
+      firstImageSegments <- filter(ds, Time == ds$Time[i])
+      for (j in 1:nrow(firstImageSegments)) {
+        if (firstImageSegments$s.radius.mean[j] >= 1) {
           img <- drawCircle(toRGB(img), 
-                            x=firstImage$m.cx[i], y=firstImage$m.cy[i], radius=firstImage$s.radius.mean[i], col="red")
+                            x=firstImageSegments$m.cx[j], y=firstImageSegments$m.cy[j], radius=firstImageSegments$s.radius.mean[j], col="red")
         }
-        if (firstImage$s.radius.min[i] >= 1) {
+        if (firstImageSegments$s.radius.min[j] >= 1) {
           img <- drawCircle(toRGB(img), 
-                            x=firstImage$m.cx[i], y=firstImage$m.cy[i], radius=firstImage$s.radius.min[i], col="orange")
+                            x=firstImageSegments$m.cx[j], y=firstImageSegments$m.cy[j], radius=firstImageSegments$s.radius.min[j], col="orange")
         }
-        if (firstImage$s.radius.max[i] >= 1) {
+        if (firstImageSegments$s.radius.max[j] >= 1) {
           img <- drawCircle(toRGB(img), 
-                            x=firstImage$m.cx[i], y=firstImage$m.cy[i], radius=firstImage$s.radius.max[i], col="orange")
+                            x=firstImageSegments$m.cx[j], y=firstImageSegments$m.cy[j], radius=firstImageSegments$s.radius.max[j], col="orange")
         }
       }
       EBImage::display(img,all=T,method="raster")
       text(dim(img)[1]/2,40,paste("ID",unique(ds$Id),"Slice",unique(ds$Slice)),col="yellow",pos=4)
-      showSegmentLabels(firstImage)
+      showSegmentLabels(firstImageSegments)
     }
     if (highlight) {
       imgz[[f]] <- drawCircle(toRGB(img), 
@@ -54,14 +55,14 @@ showSlice <- function(ds, highlight=F) {
   }
   EBImage::display(EBImage::combine(imgz),all=T,method="raster")
   text(500,40,paste("ID",unique(ds$Id),"Slice",unique(ds$Slice)),col="yellow",pos=4)
-  showSegmentLabels(filter(ds, file==ds$file[1]))
+  showSegmentLabels(filter(ds, Time == ds$Time[1]))
 }
 
 
 # Read all segment info from all datasets
 allSegments <- NULL
-for (dataset in c('train','validate','test')) {
-  fname <- paste("segments-",dataset,".csv",sep="")
+for (dataset in datasetFoldersForSegmentDetection) {
+  fname <- getSegmentFile(dataset)
   if (file.exists(fname)) {
     segInfo <- fread(fname)
   }
@@ -74,34 +75,49 @@ for (dataset in c('train','validate','test')) {
 
 # Read previous segment classification
 segPredictSet <- NULL
-segPredictFile <- "segments-predict.csv"
 if (file.exists(segPredictFile)) {
   segPredictSet <- fread(segPredictFile)
-  if (length(setdiff(names(allSegments), names(segPredictSet))) != 0 |
-        length(setdiff(setdiff(names(segPredictSet), names(allSegments)), 
-                       c("isLV", "midSlice"))) != 0) {
-    print("Names have changed - existing segment prediction set is void")
-    cat("New fields:", setdiff(names(allSegments), names(segPredictSet)), fill=T)
-    cat("Prediction set adds:", setdiff(setdiff(names(segPredictSet), names(allSegments)), 
-                                        c("isLV", "midSlice")), fill=T)
-    segPredictSet <- NULL
-  }
+
+  # Only use a small set of fairly static attributes that are enough to identify a segment
+  segPredictSet <- select(segPredictSet, 
+                          Id, Slice, Time,   # uniquely identifies image via join to playlist
+                          UUID,              # unique segment identifier
+                          starts_with("m."), # standard moments & shape attributes 
+                          starts_with("s."))
 }
 
-# Select only the middle segment for each Id (TODO: consider broader selection)
-slicesToConsider <- group_by(allSegments, Id) %>% 
-  summarise(midSlice = sort(unique(Slice))[ceiling(length(unique(Slice))/2)]) 
-if (! is.null(segPredictSet)) {
-  allSegments <- left_join(filter(allSegments, !(UUID %in% segPredictSet$UUID)), slicesToConsider) %>%
-    filter(Slice == midSlice)
-} else {
-  allSegments <- left_join(allSegments, slicesToConsider) %>%
-    filter(Slice == midSlice)
-}
+# Read playlist, which is a full list of all slices for all cases of all datasets
+# which provides additional (meta) info about the slices
+sliceInfo <- fread("slicelist.csv")
 
+# Select only the middle slices (usually 2 per Id)
+# TODO consider a wider selection
+allSegments <- left_join(allSegments, select(sliceInfo, -ImgType, -Dataset), c("Id", "Slice")) %>%
+  group_by(Id) %>% 
+  filter(SliceOrder == min(SliceOrder))
 
-# Get input for these slices
+# Select slices to prompt for
 promptSlices <- unique(select(allSegments, Id, Slice)) 
+if (!is.null(segPredictSet)) {
+  promptSlices <- left_join(promptSlices, 
+                            mutate(unique(select(segPredictSet, Id, Slice)), classifiedAlready=T)) %>%
+    mutate(classifiedAlready = !is.na(classifiedAlready)) %>%
+    arrange(classifiedAlready, Id, Slice)
+}
+
+# TODO
+# for each slice
+#   1. show first image
+#      prompt for segment
+#      if valid: 
+#           show all images of slice, with extrapolated segment (same pos)
+#           prompt for ok
+#           if ok - classify all segs of all imgs as T/F
+#           if not ok - just classify the segs of the first img
+#      if no valid seg:
+#           classify all segs of first img as F
+
+
 if (nrow(promptSlices) > 0) {
   for (s in 1:nrow(promptSlices)) {
     slice <- filter(allSegments, Id == promptSlices$Id[s], Slice == promptSlices$Slice[s])
@@ -109,7 +125,7 @@ if (nrow(promptSlices) > 0) {
     slice <- unique(slice) # TODO not sure why there are duplicates
     
     showSlice(slice)
-    
+    stop()
     # TODO create model and show predictions
     
     identifiedLVSegment <- readInteger("Identify segment of left ventricle in first image (0=none): ")

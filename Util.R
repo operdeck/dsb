@@ -41,6 +41,7 @@ readInteger <- function(p = "Enter an integer: ")
 }
 
 datasetFolders <- c('train','validate','test')
+datasetFoldersForSegmentDetection <- c('train','validate')
 
 # create mid-ordered sequence
 midOrderSeq <- function(n) {
