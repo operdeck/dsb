@@ -1,6 +1,11 @@
 # Ad-hoc script to fix up segment data sets when formats
 # change
 
+# derived:
+#       segmentInfo$roundness <- 4*pi*segmentInfo$s.area/(segmentInfo$s.perimeter^2)
+# estimate of LV is area of ellipsoid with radius min and max of center (pi*a*b)
+# slice thickness etc see Python code
+
 source("util.R")
 
 for (ds in datasetFolders) {
@@ -12,7 +17,7 @@ for (ds in datasetFolders) {
     
     ### FIX UP CODE HERE
     
-    dataNew <- select(dataOld, -SliceRelIndex)
+    dataNew <- select(dataOld, -roundness)
     
     #####
     removedSet <- setdiff(names(dataOld), names(dataNew))
