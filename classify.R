@@ -5,6 +5,24 @@
 
 source("util.R")
 
+# TODO
+#
+# Manually incorrectly identified - add some 'shitlist' of Id/Slices to be re-done:
+#  train 7, slice 49 (Time 13 incorrect)
+#  train 11, slice 14 (Couple of Times, so small)
+#
+# TODO maybe also a re-confirm after the graph
+# maybe use additional criterion of dist to LV < 2 (should really be very close), filter
+# out the slice images that do not match this criterion (isLV is just unknown for them)
+#
+# Incorrect segmentations by segmentation code
+#  train 6, slice 10 - too much light around edges
+#  train 8, slice 58 - same
+#  train 8, slice 59 - same
+#  train 3, slice 46&47 - very dark, some images ok, but some lack segments
+
+
+
 segPredictFile <- "segments-predict.csv"
 
 showSegmentLabels <- function(imageDS) {
@@ -14,48 +32,43 @@ showSegmentLabels <- function(imageDS) {
   }
 }
 
-# Display and prompt for one slice
-showSlice <- function(ds, highlight=F) {
-  #   filez <-  ds$file
-  #   filez <-  unique(ds$file)
+showSingleImage <- function(ds) {
+  f <- getImageFile(ds[1,])
+  dicom <- readDICOMFile(f)
+  img <- Image(normalize(dicom$img))
+  if (dim(img)[1] > dim(img)[2]) {
+    img <- rotate(img,-90)
+  }
+  for (j in 1:nrow(ds)) {
+    radii <- c(ds$s.radius.mean[j], ds$s.radius.min[j], ds$s.radius.max[j])
+    for (k in seq(length(radii))) {
+      if (radii[k] >= 1) {
+        img <- drawCircle(toRGB(img), 
+                          x=ds$m.cx[j], y=ds$m.cy[j], radii[k], col=ifelse(k==1,"red","orange"))
+      }
+    }
+  }
+  EBImage::display(img,all=T,method="raster")
+  text(10,20,getImageFile(ds),col="yellow",pos=4)
+  showSegmentLabels(ds)
+}
+
+# Show all images of this slice
+showAllSliceImages <- function(ds) {
   imgz <- list()
-  for (i in 1:nrow(ds)) {
-    f <- getImageFile(ds[i,])
+  for (t in unique(ds$Time)) {
+    f <- getImageFile(ds[which(ds$Time == t)[1],])
     dicom <- readDICOMFile(f)
     img <- Image(normalize(dicom$img))
     if (dim(img)[1] > dim(img)[2]) {
       img <- rotate(img,-90)
     }
-    if (!highlight & i == 1) {
-      firstImageSegments <- filter(ds, Time == ds$Time[i])
-      for (j in 1:nrow(firstImageSegments)) {
-        if (firstImageSegments$s.radius.mean[j] >= 1) {
-          img <- drawCircle(toRGB(img), 
-                            x=firstImageSegments$m.cx[j], y=firstImageSegments$m.cy[j], radius=firstImageSegments$s.radius.mean[j], col="red")
-        }
-        if (firstImageSegments$s.radius.min[j] >= 1) {
-          img <- drawCircle(toRGB(img), 
-                            x=firstImageSegments$m.cx[j], y=firstImageSegments$m.cy[j], radius=firstImageSegments$s.radius.min[j], col="orange")
-        }
-        if (firstImageSegments$s.radius.max[j] >= 1) {
-          img <- drawCircle(toRGB(img), 
-                            x=firstImageSegments$m.cx[j], y=firstImageSegments$m.cy[j], radius=firstImageSegments$s.radius.max[j], col="orange")
-        }
-      }
-      EBImage::display(img,all=T,method="raster")
-      text(dim(img)[1]/2,40,paste("ID",unique(ds$Id),"Slice",unique(ds$Slice)),col="yellow",pos=4)
-      showSegmentLabels(firstImageSegments)
-    }
-    if (highlight) {
-      imgz[[f]] <- drawCircle(toRGB(img), 
-                              x=ds$m.cx[i], y=ds$m.cy[i], radius=ds$s.radius.mean[i], col="red")
-    } else {
-      imgz[[f]] <- img
-    }
+    seg <- which(ds$Time == t & ds$isLV)
+    imgz[[f]] <- drawCircle(toRGB(img), 
+                            x=ds$m.cx[seg], y=ds$m.cy[seg], radius=ds$s.radius.mean[seg], col="red")
   }
   EBImage::display(EBImage::combine(imgz),all=T,method="raster")
   text(500,40,paste("ID",unique(ds$Id),"Slice",unique(ds$Slice)),col="yellow",pos=4)
-  showSegmentLabels(filter(ds, Time == ds$Time[1]))
 }
 
 
@@ -77,13 +90,14 @@ for (dataset in datasetFoldersForSegmentDetection) {
 segPredictSet <- NULL
 if (file.exists(segPredictFile)) {
   segPredictSet <- fread(segPredictFile)
-
+  
   # Only use a small set of fairly static attributes that are enough to identify a segment
   segPredictSet <- select(segPredictSet, 
-                          Id, Slice, Time,   # uniquely identifies image via join to playlist
+                          Id, Slice, Time,   # uniquely identifies , image via join to playlist
                           UUID,              # unique segment identifier
                           starts_with("m."), # standard moments & shape attributes 
-                          starts_with("s."))
+                          starts_with("s."),
+                          isLV)
 }
 
 # Read playlist, which is a full list of all slices for all cases of all datasets
@@ -105,61 +119,77 @@ if (!is.null(segPredictSet)) {
     arrange(classifiedAlready, Id, Slice)
 }
 
-# TODO
-# for each slice
-#   1. show first image
-#      prompt for segment
-#      if valid: 
-#           show all images of slice, with extrapolated segment (same pos)
-#           prompt for ok
-#           if ok - classify all segs of all imgs as T/F
-#           if not ok - just classify the segs of the first img
-#      if no valid seg:
-#           classify all segs of first img as F
-
-
 if (nrow(promptSlices) > 0) {
   for (s in 1:nrow(promptSlices)) {
     slice <- filter(allSegments, Id == promptSlices$Id[s], Slice == promptSlices$Slice[s])
-    setkey(slice) # drop keys otherwise unique fails
-    slice <- unique(slice) # TODO not sure why there are duplicates
-    
-    showSlice(slice)
-    stop()
-    # TODO create model and show predictions
-    
-    identifiedLVSegment <- readInteger("Identify segment of left ventricle in first image (0=none): ")
-    filez <- unique(slice$file)
-    slice <- slice[file == filez[1], isLV := (segIndex == identifiedLVSegment)]
-    
-    # position of identified segment
-    identifiedLVSegment.x <- slice$m.cx[slice$file == filez[1] & slice$isLV]
-    identifiedLVSegment.y <- slice$m.cy[slice$file == filez[1] & slice$isLV]
-    
-    # distance of all other segments to the identified one and identify closest one in each image
-    slice$distToLVSeg <- sqrt((slice$m.cx - identifiedLVSegment.x)^2 + (slice$m.cy - identifiedLVSegment.y)^2)
-    identifiedLVSegments <- group_by(slice, file) %>% summarise(extrapolatedLVSegment = segIndex[which.min(distToLVSeg)])
-    slice <- left_join(slice, identifiedLVSegments)
-    showSlice(select(filter(slice, segIndex == extrapolatedLVSegment), file, m.cx, m.cy, s.radius.mean, segIndex), 
-              highlight=T)
-    
-    # TODO : prompt if all are ok and fix incorrect ones
-    
-    # set isLV for all other images in the same slice
-    slice <- slice[file != filez[1], isLV := (segIndex == extrapolatedLVSegment)]
-    slice <- select(slice, -distToLVSeg, -extrapolatedLVSegment)
+    if (nrow(slice > 0)) {
+      slice$isLV <- NA
+      firstImage <- filter(slice, Time == slice$Time[1])
+      showSingleImage(firstImage)
+      identifiedLVSegment <- readInteger("Identify segment of left ventricle in first image (0=none): ")
+      if (identifiedLVSegment == 0) {
+        # Set only segments of this image
+        slice <- slice[Time == slice$Time[1], isLV := FALSE]
+      } else {
+        # Set segments of other images based to distance to segment in identified image
+        lv <- firstImage[firstImage$segIndex == identifiedLVSegment,]
+        
+        slice$distToLVSeg <- sqrt((slice$m.cx - lv$m.cx)^2 + (slice$m.cy - lv$m.cy)^2)
+        identifiedLVSegments <- group_by(slice, Time) %>% summarise(segLV = segIndex[which.min(distToLVSeg)])
+        slice <- left_join(slice, identifiedLVSegments, by=c("Time"))
+        slice$isLV <- (slice$segIndex == slice$segLV)
+        
+        showAllSliceImages(slice)
+        identifiedCorrectly <- readline("Are all segments identified correctly (y/n): ")
+        if (identifiedCorrectly != "y") {
+          # Set only segments of this image
+          slice$isLV <- NA
+          slice <- slice[Time == slice$Time[1], isLV := (segIndex == identifiedLVSegment)]
+        }
+      }
+    }
+    View(slice)
     
     # visualize volume for this slice
-    print(ggplot(filter(slice, isLV), aes(x=Time, y=sliceVolume, colour=segIndex))+geom_line()+
-            ggtitle(paste("Volume over Time for ID",
-                          unique(slice$Id),"Slice",unique(slice$Slice))))
+    if (nrow(filter(slice, isLV))>0) {
+      print(ggplot(filter(slice, isLV), aes(x=Time, y=s.area, colour=segIndex))+geom_line()+
+              ggtitle(paste("Segment area over Time for ID",
+                            unique(slice$Id),"Slice",unique(slice$Slice))))
+    }
     
     # save data
+    newData <- filter(slice, !is.na(isLV)) %>% select( 
+      Id, Slice, Time,   # uniquely identifies image via join to playlist
+      UUID,              # unique segment identifier
+      starts_with("m."), # standard moments & shape attributes 
+      starts_with("s."),
+      isLV)
+    
     if (is.null(segPredictSet)) {
-      segPredictSet <- filter(slice, !is.na(isLV))
+      segPredictSet <- newData
     } else {
-      segPredictSet <- rbind(segPredictSet, filter(slice, !is.na(isLV)))
+      # TODO check both are compatible
+      removedSet <- setdiff(names(segPredictSet), names(newData))
+      addedSet <- setdiff(names(newData), names(segPredictSet))
+      diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
+      if (length(removedSet) + length(addedSet) > 0) {
+        print("Existing:")
+        print(names(segPredictSet))
+        print("New:")
+        print(names(newData))
+        print(paste(diffSet, collapse=","))
+        stop("Datasets do not match up. Please consider removing or fixing segment classification.")
+      }
+      
+      segPredictSet <- rbind(segPredictSet, newData)
     }
+    
+    segmentedByID <- left_join(unique(select(playlist, Dataset, Id)), unique(select(segPredictSet, Id, isLV))) %>% group_by(Dataset, Id) %>% summarise(hasSegs = any(isLV)) %>% filter(hasSegs)
+    segmentedBySlice <- left_join(unique(select(playlist, Dataset, Id, Slice)), unique(select(segPredictSet, Id, Slice, isLV))) %>% group_by(Dataset, Id, Slice) %>% summarise(hasSegs = any(isLV)) %>% filter(hasSegs)
+    
+    cat("Segmented by case : ", nrow(unique(select(segmentedByID, Id))), "of", nrow(unique(select(playlist, Id))), fill=T)
+    cat("Segmented by slice: ", nrow(unique(select(segmentedBySlice, Id, Slice))), "of", nrow(unique(select(playlist, Id, Slice))), fill=T)
+    
     write.csv(segPredictSet, segPredictFile, row.names=F)
   }
 } else {
