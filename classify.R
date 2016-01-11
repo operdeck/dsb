@@ -5,25 +5,24 @@
 
 source("util.R")
 
-# TODO
-#
-# Manually incorrectly identified - add some 'shitlist' of Id/Slices to be re-done:
-#  train 7, slice 49 (Time 13 incorrect)
-#  train 11, slice 14 (Couple of Times, so small)
-#
-# TODO maybe also a re-confirm after the graph
-# maybe use additional criterion of dist to LV < 2 (should really be very close), filter
-# out the slice images that do not match this criterion (isLV is just unknown for them)
-#
-# Incorrect segmentations by segmentation code
-#  train 6, slice 10 - too much light around edges
-#  train 8, slice 58 - same
-#  train 8, slice 59 - same
-#  train 3, slice 46&47 - very dark, some images ok, but some lack segments
-
-
-
 segPredictFile <- "segments-predict.csv"
+
+# Id's of images that need re-classification because of manual error. All slices will be discarded.
+redoClassificationIdList <- c() # list the ID's here
+
+# TODO maybe matching UUID's (re-segmented) should take priority 
+# TODO auto detect classified images with no LV segments
+
+# Problematic images - need re-segmentation
+# Too much light around edges:
+#  train 6, slice 10
+#  train 8, slice 58
+#  train 8, slice 59
+# Very dark, some images OK but some lack segments:
+#  train 3, slice 46&47
+# Near miss
+#  train 7, slice 49 : almost all images OK but segment 13 (or so) is incorrect
+
 
 showSegmentLabels <- function(imageDS) {
   for (i in 1:nrow(imageDS)) {
@@ -112,11 +111,13 @@ allSegments <- left_join(allSegments, select(sliceInfo, -ImgType, -Dataset), c("
 
 # Select slices to prompt for
 promptSlices <- unique(select(allSegments, Id, Slice)) 
+promptSlices$ReDo <- promptSlices$Id %in% redoClassificationIdList
+promptSlices$Random <- runif(nrow(promptSlices))
 if (!is.null(segPredictSet)) {
   promptSlices <- left_join(promptSlices, 
                             mutate(unique(select(segPredictSet, Id, Slice)), classifiedAlready=T)) %>%
     mutate(classifiedAlready = !is.na(classifiedAlready)) %>%
-    arrange(classifiedAlready, Id, Slice)
+    arrange(!ReDo, classifiedAlready, Random) # previously: Id, Slice instead of Random
 }
 
 if (nrow(promptSlices) > 0) {
@@ -126,20 +127,42 @@ if (nrow(promptSlices) > 0) {
       slice$isLV <- NA
       firstImage <- filter(slice, Time == slice$Time[1])
       showSingleImage(firstImage)
+      
+      cat("Id=",promptSlices$Id[s],"Slice=",promptSlices$Slice[s],
+          "#Images=",length(unique(slice$Time)),
+          "#Segment=",nrow(slice),fill=T)
+      
       identifiedLVSegment <- readInteger("Identify segment of left ventricle in first image (0=none): ")
       if (identifiedLVSegment == 0) {
         # Set only segments of this image
         slice <- slice[Time == slice$Time[1], isLV := FALSE]
       } else {
         # Set segments of other images based to distance to segment in identified image
+        # filter out any images with all segments that are too distant from the identified LV in the manually classified image
         lv <- firstImage[firstImage$segIndex == identifiedLVSegment,]
         
         slice$distToLVSeg <- sqrt((slice$m.cx - lv$m.cx)^2 + (slice$m.cy - lv$m.cy)^2)
-        identifiedLVSegments <- group_by(slice, Time) %>% summarise(segLV = segIndex[which.min(distToLVSeg)])
+        identifiedLVSegments <- group_by(slice, Time) %>% summarise(segLV = segIndex[which.min(distToLVSeg)],
+                                                                    anyWithinThreshold = any(distToLVSeg < 5))
         slice <- left_join(slice, identifiedLVSegments, by=c("Time"))
         slice$isLV <- (slice$segIndex == slice$segLV)
+        slice <- filter(slice, anyWithinThreshold)
+        
+        # graph here
+        plotData <- filter(slice, isLV)
+        if (nrow(plotData)>0) {
+          plotData <- mutate(plotData, 
+                             radius.mean.area = pi*s.radius.mean^2,
+                             radius.max.area = pi*s.radius.max^2,
+                             radius.min.area = pi*s.radius.min^2) %>% 
+            gather(metric, area, s.area, starts_with("radius."))
+          print(ggplot(plotData, aes(x=Time, y=area, colour=metric))+geom_line()+
+                  ggtitle(paste("Segment area over Time for ID",
+                                unique(slice$Id),"Slice",unique(slice$Slice))))
+        }
         
         showAllSliceImages(slice)
+        
         identifiedCorrectly <- readline("Are all segments identified correctly (y/n): ")
         if (identifiedCorrectly != "y") {
           # Set only segments of this image
@@ -149,13 +172,6 @@ if (nrow(promptSlices) > 0) {
       }
     }
     View(slice)
-    
-    # visualize volume for this slice
-    if (nrow(filter(slice, isLV))>0) {
-      print(ggplot(filter(slice, isLV), aes(x=Time, y=s.area, colour=segIndex))+geom_line()+
-              ggtitle(paste("Segment area over Time for ID",
-                            unique(slice$Id),"Slice",unique(slice$Slice))))
-    }
     
     # save data
     newData <- filter(slice, !is.na(isLV)) %>% select( 
@@ -181,14 +197,28 @@ if (nrow(promptSlices) > 0) {
         stop("Datasets do not match up. Please consider removing or fixing segment classification.")
       }
       
-      segPredictSet <- rbind(segPredictSet, newData)
+      nDrop <- nrow(filter(segPredictSet, 
+                           Slice %in% newData$Slice,
+                           Id %in% newData$Id))
+      if (nDrop > 0) {
+        cat("...dropping",nDrop,"rows from previous results",fill=T)
+      }
+      
+      segPredictSet <- rbind(filter(segPredictSet, 
+                                    !(Slice %in% newData$Slice & 
+                                        Id %in% newData$Id)), 
+                             newData)
+      
     }
     
-    segmentedByID <- left_join(unique(select(playlist, Dataset, Id)), unique(select(segPredictSet, Id, isLV))) %>% group_by(Dataset, Id) %>% summarise(hasSegs = any(isLV)) %>% filter(hasSegs)
-    segmentedBySlice <- left_join(unique(select(playlist, Dataset, Id, Slice)), unique(select(segPredictSet, Id, Slice, isLV))) %>% group_by(Dataset, Id, Slice) %>% summarise(hasSegs = any(isLV)) %>% filter(hasSegs)
+    segmentedByID <- left_join(unique(select(sliceInfo, Dataset, Id)), unique(select(segPredictSet, Id, isLV))) %>% group_by(Dataset, Id) %>% summarise(hasSegs = any(isLV)) %>% filter(hasSegs)
+    segmentedBySlice <- left_join(unique(select(sliceInfo, Dataset, Id, Slice)), unique(select(segPredictSet, Id, Slice, isLV))) %>% group_by(Dataset, Id, Slice) %>% summarise(hasSegs = any(isLV)) %>% filter(hasSegs)
     
-    cat("Segmented by case : ", nrow(unique(select(segmentedByID, Id))), "of", nrow(unique(select(playlist, Id))), fill=T)
-    cat("Segmented by slice: ", nrow(unique(select(segmentedBySlice, Id, Slice))), "of", nrow(unique(select(playlist, Id, Slice))), fill=T)
+    cat("Classified", nrow(segPredictSet), "segments in", nrow(filter(segPredictSet, isLV)), "Images", fill=T)
+    cat("Classified", nrow(unique(select(segmentedByID, Id))), 
+        "of", nrow(unique(select(sliceInfo, Id))), "Ids", fill=T)
+    cat("Classified", nrow(unique(select(segmentedBySlice, Id, Slice))), 
+        "of", nrow(unique(select(sliceInfo, Id, Slice))), "Slices", fill=T)
     
     write.csv(segPredictSet, segPredictFile, row.names=F)
   }
