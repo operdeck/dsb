@@ -26,26 +26,34 @@ for (dataset in datasetFolders) {
 }
 setkey(allSegments, Id, Slice, Time, UUID)
 
+# NOTE: UUID is not really unique
+
 # First cut at 2-D normalization of the image data
 allSegments <- mutate(allSegments,
                       areaMultiplier = pixelSpacing.x * pixelSpacing.y,
                       lengthMultiplier = sqrt(areaMultiplier),
                       
                       area = s.area*areaMultiplier,
+                      area.ellipse = pi*s.radius.min*s.radius.max*areaMultiplier,
                       
                       perimeter = s.perimeter*lengthMultiplier,
                       radius.mean = s.radius.mean*lengthMultiplier,
                       radius.min = s.radius.min*lengthMultiplier,
                       radius.max = s.radius.max*lengthMultiplier,
+                      radius.var = sqrt(s.radius.sd)*lengthMultiplier,
                       
-                      # TODO read into "m.majoraxis"    "m.eccentricity"  "m.theta"
-                      # TODO figure out if s.radius.sd should be scaled as well
-                      
+                      majoraxis = m.majoraxis*lengthMultiplier,
                       roundness = 4*pi*area/(perimeter^2)) %>%
+  rename(
+    # "m.eccentricity" and "m.theta" are scale independent
+    eccentricity = m.eccentricity,
+    theta = m.theta) %>%
   select(-pixelSpacing.x,
          -pixelSpacing.y,
          -areaMultiplier,
-         -lengthMultiplier)
+         -lengthMultiplier,
+         -m.majoraxis,
+         -starts_with("s."))
 
 # First, match the ones with the same UUID
 segClassificationSet <- left_join(select(classifiedSegments, Id, Slice, Time, UUID, isLV), 
@@ -64,7 +72,8 @@ if (nrow(filter(segClassificationSet, is.na(Dataset))) > 0) {
     candidateSegments <- filter(allCandidateSegments, Id==s$Id[i], Slice==s$Slice[i], Time==s$Time[i]) # all segs in this image
     lv <- left_join(s[i], classifiedSegmentsOlder, by=c("Id","Slice","Time")) %>% filter(isLV) # classified LV in this image
     
-    cat("Matching new classification to old segmentation for Id", s$Id[i], "Slice", s$Slice[i], "Image", s$Time[i], 
+    # TODO only report per slice - not for every image
+    cat("Matching existing classification to new segmentation for Id", s$Id[i], "Slice", s$Slice[i], "Image", s$Time[i], 
         "candidates:", nrow(candidateSegments), "classified:", nrow(lv), fill=T)
     
     candidateSegments$isLV <- NA
@@ -87,7 +96,18 @@ if (nrow(filter(segClassificationSet, is.na(Dataset))) > 0) {
 
 segClassificationSet <- filter(segClassificationSet, !is.na(isLV)) # just to be sure
 
-# quick plot to verify results
+# quick plots to verify results
+
+# TODO: (trigonometric) interpolation & outlier detection
+# NOTE: the graphs of area vs time have missing data points as well
+# as outliers (typically near zero). These should be fixed somehow through
+# interpolation or other means.
+# ID 403/Slice 10 shows near-zero's for time 9..16
+# ID 334/Slice 15 shows missing values for time 10..15
+# ID 504/Slice 17 shows a near perfect graph
+# See for example:
+#  http://stats.stackexchange.com/questions/63233/fourier-trigonometric-interpolation
+
 l <- unique(select(segClassificationSet, Id, Slice))
 for (i in seq(nrow(l))) {
   slice <- filter(segClassificationSet, Id==l$Id[i], Slice==l$Slice[i])
@@ -98,7 +118,7 @@ for (i in seq(nrow(l))) {
                      area.radius.min = pi*radius.min^2) %>% 
     gather(metric, area, starts_with("area"))
   if (nrow(filter(slice, isLV)) > 1) {
-    print(ggplot(plotData, aes(x=Time, y=area, colour=metric))+geom_line()+
+    print(ggplot(plotData, aes(x=Time, y=area, colour=metric))+geom_line()+geom_point()+
             ggtitle(paste("Segment area over Time for ID",
                           unique(slice$Id),"Slice",unique(slice$Slice))))
   } else {
@@ -113,33 +133,70 @@ for (i in seq(nrow(l))) {
 
 segClassificationSet <- select(segClassificationSet, 
                                -m.cx, -m.cy, -distToROI,
-                               -Id, -Slice, -Time, -Dataset, -ImgType, -Offset, -segIndex)
+                               -Id, -Slice, -Time, -Dataset, -ImgType, -Offset, 
+                               -segIndex)
 allSegments <- select(allSegments, 
                       -m.cx, -m.cy, -distToROI,
-                      -Id, -Slice, -Time, -Dataset, -ImgType, -Offset, -segIndex)
+                      # we keep the meta-attributes as these are useful for the further roll-up
+                      -segIndex)
 
 trainData <- segClassificationSet
 valSet <- sample.int(nrow(trainData), 0.20*nrow(trainData))
-cat("Building segment model with",length(names(trainData)),"predictors")
-leftVentricleSegmentModel <- xgboost(data = as.matrix(select(trainData[-valSet], -UUID, -isLV)), 
-                                     label = trainData[-valSet]$isLV, 
+trainDataPredictorsOnly <- select(trainData, -UUID, -isLV)
+
+cat("Building segment model with",length(names(trainDataPredictorsOnly)),"predictors",fill=T)
+uniVariateAnalysis <- data.frame(Predictor=names(trainDataPredictorsOnly),
+                                 validation=sapply(seq(length(trainDataPredictorsOnly)), 
+                                                   function(i) {auc(trainData$isLV[valSet], trainDataPredictorsOnly[[i]][valSet])}),
+                                 train=sapply(seq(length(trainDataPredictorsOnly)), 
+                                              function(i) {auc(trainData$isLV[-valSet], trainDataPredictorsOnly[[i]][-valSet])}))
+uniVariateAnalysis <- gather(uniVariateAnalysis, dataset, auc, -Predictor)
+print(ggplot(uniVariateAnalysis, aes(x=Predictor, y=auc, fill=dataset))+
+        geom_bar(stat="identity",position="dodge")+
+        theme(axis.text.x = element_text(angle = 45, hjust=1))+
+        geom_hline(yintercept=0.52,linetype="dashed")+
+        ggtitle("AUC of individual predictors for segmentation model"))
+
+leftVentricleSegmentModel <- xgboost(data = as.matrix(trainDataPredictorsOnly[-valSet]), 
+                                     label = trainData$isLV[-valSet], 
                                      max.depth = 2, eta = 0.1, nround = 100,
                                      objective = "binary:logistic", missing=NaN, verbose=0)
-imp_matrix <- xgb.importance(feature_names = names(select(trainData, -UUID, -isLV)), model = leftVentricleSegmentModel)
+imp_matrix <- xgb.importance(feature_names = names(trainDataPredictorsOnly), model = leftVentricleSegmentModel)
 print(xgb.plot.importance(importance_matrix = imp_matrix))
 
 # Get an idea of the accuracy. Note, it seems very high always.
-train_probLV <- predict(leftVentricleSegmentModel, as.matrix(select(trainData[valSet], -UUID, -isLV)))
-cat("AUC for validation set:", auc(trainData[valSet]$isLV, train_probLV), fill=T)
-plotSet <- group_by(data.frame(predictedProbability = cut(train_probLV, 10), 
-                               isLV = trainData[valSet]$isLV), predictedProbability) %>% 
-  summarise(percentageLV = sum(isLV)/n())
-print(ggplot(plotSet, aes(x=predictedProbability, y=percentageLV)) + geom_bar(stat="identity") + 
-  ggtitle("LV predicted vs actual") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)))
+probLV <- predict(leftVentricleSegmentModel, as.matrix(trainDataPredictorsOnly))
+cat("AUC for validation set:", auc(trainData$isLV[valSet], probLV[valSet]), fill=T)
+
+# Distribution of probabilities
+plotSet <- group_by(data.frame(predictedProbability = cut2(probLV, g=20), # equi-weight
+                               isLV = trainData$isLV,
+                               isVal = (seq(nrow(trainData)) %in% valSet)), predictedProbability) %>% 
+  summarise(validation = sum(isLV & isVal)/sum(isVal),
+            train = sum(isLV & !isVal)/(n()-sum(isVal)),
+            count = n()) %>%
+  gather(dataset, probability, -count, -predictedProbability)
+print(ggplot(plotSet, aes(x=predictedProbability, y=probability, fill=dataset)) + 
+        geom_bar(stat="identity",position="dodge") + 
+        ggtitle("Segment Prediction") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)))
+
+# Keep data for analysis elsewhere
+write.csv(select(trainData, -UUID), "segmentTrainSet.csv", row.names=F)
 
 # Apply on full dataset
-# p <- predict(leftVentricleSegmentModel, as.matrix(allSegments))
+cat("Apply segment model to", nrow(allSegments), "segments", fill=T)
+allSegments$pLV <- predict(leftVentricleSegmentModel, 
+                           as.matrix(select(allSegments, -Id, -Slice, -Time, -Dataset, -ImgType, -Offset, -UUID)))
+
+imageData <- left_join(group_by(allSegments, Id, Slice, Time) %>%
+                         summarise(maxpLV = max(pLV),
+                                   isLV = (pLV == max(pLV))) %>%
+                         filter(isLV),
+                       allSegments)
+stop()
+segInfo <- left_join(segInfo, group_by(segInfo, Id, Slice, Time) %>% 
+                       summarise(lvSeg = segIndex[which.max(pLeftVentricle)]) )
 
 stop()
 

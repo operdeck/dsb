@@ -4,6 +4,7 @@
 # source("http://bioconductor.org/biocLite.R")
 # biocLite("EBImage")
 
+library(Hmisc)
 require('EBImage')
 require('oro.dicom')
 library(tidyr)
