@@ -33,7 +33,7 @@ pos2coord<-function(pos=NULL, coord=NULL, dim.mat=NULL){
 readInteger <- function(p = "Enter an integer: ")
 { 
   n <- readline(prompt=p)
-  if(!grepl("^[0-9]+$",n))
+  if(!grepl("^[-+]?[0-9]+$",n))
   {
     return(readInteger(p))
   }
@@ -76,4 +76,20 @@ getImageFile <- function(entry) {
   paste(getImageFolder(entry), 
         paste("IM-",sprintf("%04d",entry$Offset),"-",sprintf("%04d",entry$Time),".dcm",sep=""),
         sep="/")
+}
+
+# Plot interesting attributes over time for one slice
+plotSlice <- function(slice) {
+  plotData <- mutate(slice, 
+                     area.radius.mean = pi*radius.mean^2,
+                     area.radius.max = pi*radius.max^2,
+                     area.radius.min = pi*radius.min^2) %>% 
+    gather(metric, area, starts_with("area"))
+  if (nrow(slice) > 1) {
+    print(ggplot(plotData, aes(x=Time, y=area, colour=metric))+geom_line()+geom_point()+
+            ggtitle(paste("Segment area over Time for ID",
+                          unique(slice$Id),"Slice",unique(slice$Slice))))
+  } else {
+    cat("No image with identified LV at all for slice:", unique(slice$Id), unique(slice$Slice), fill=T)
+  }
 }

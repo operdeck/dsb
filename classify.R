@@ -5,6 +5,7 @@
 
 source("util.R")
 
+gc()
 segPredictFile <- "segments-predict.csv"
 
 # Id's of images that need re-classification because of manual error. All slices will be discarded.
@@ -33,6 +34,10 @@ showSegmentLabels <- function(imageDS) {
 
 showSingleImage <- function(ds) {
   f <- getImageFile(ds[1,])
+  if (!file.exists(f)) {
+    print(f)
+    stop("File doesnt exist on this system")
+  }
   dicom <- readDICOMFile(f)
   img <- Image(normalize(dicom$img))
   if (dim(img)[1] > dim(img)[2]) {
@@ -126,89 +131,93 @@ if (nrow(promptSlices) > 0) {
     if (nrow(slice > 0)) {
       slice$isLV <- NA
       firstImage <- filter(slice, Time == slice$Time[1])
-      showSingleImage(firstImage)
-      
-      cat("Id=",promptSlices$Id[s],"Slice=",promptSlices$Slice[s],
-          "#Images=",length(unique(slice$Time)),
-          "#Segment=",nrow(slice),fill=T)
-      
-      identifiedLVSegment <- readInteger("Identify segment of left ventricle in first image (0=none): ")
-      if (identifiedLVSegment == 0) {
-        # Set only segments of this image
-        slice <- slice[Time == slice$Time[1], isLV := FALSE]
+      if (all(file.exists(unique(getImageFile(firstImage))))) {
+        showSingleImage(firstImage)
+        
+        cat("Id=",promptSlices$Id[s],"Slice=",promptSlices$Slice[s],
+            "#Images=",length(unique(slice$Time)),
+            "#Segment=",nrow(slice),fill=T)
+        
+        identifiedLVSegment <- readInteger("Identify segment of left ventricle in first image (0=none, -1=can't see): ")
+        if (identifiedLVSegment == -1) {
+          # Keep all at NA (we don't know)
+        } else {
+          if (identifiedLVSegment == 0) {
+            # Set only segments of this image
+            slice <- slice[Time == slice$Time[1], isLV := FALSE]
+          } else {
+            # Set segments of other images based to distance to segment in identified image
+            # filter out any images with all segments that are too distant from the identified LV in the manually classified image
+            lv <- firstImage[firstImage$segIndex == identifiedLVSegment,]
+            
+            slice$distToLVSeg <- sqrt((slice$m.cx - lv$m.cx)^2 + (slice$m.cy - lv$m.cy)^2)
+            identifiedLVSegments <- group_by(slice, Time) %>% summarise(segLV = segIndex[which.min(distToLVSeg)],
+                                                                        anyWithinThreshold = any(distToLVSeg < 5))
+            slice <- left_join(slice, identifiedLVSegments, by=c("Time"))
+            slice$isLV <- (slice$segIndex == slice$segLV)
+            slice <- filter(slice, anyWithinThreshold)
+            
+            # graph of area vs image
+            plotSlice(filter(slice, isLV) %>% rename(radius.mean = s.radius.mean,
+                                                     radius.max = s.radius.max,
+                                                     radius.min = s.radius.min))
+            # all images
+            showAllSliceImages(slice)
+            
+            identifiedCorrectly <- readline("Are all segments identified correctly (y/n): ")
+            if (identifiedCorrectly != "y") {
+              # Set only segments of this image
+              slice$isLV <- NA
+              slice <- slice[Time == slice$Time[1], isLV := (segIndex == identifiedLVSegment)]
+            }
+          }
+        }
       } else {
-        # Set segments of other images based to distance to segment in identified image
-        # filter out any images with all segments that are too distant from the identified LV in the manually classified image
-        lv <- firstImage[firstImage$segIndex == identifiedLVSegment,]
-        
-        slice$distToLVSeg <- sqrt((slice$m.cx - lv$m.cx)^2 + (slice$m.cy - lv$m.cy)^2)
-        identifiedLVSegments <- group_by(slice, Time) %>% summarise(segLV = segIndex[which.min(distToLVSeg)],
-                                                                    anyWithinThreshold = any(distToLVSeg < 5))
-        slice <- left_join(slice, identifiedLVSegments, by=c("Time"))
-        slice$isLV <- (slice$segIndex == slice$segLV)
-        slice <- filter(slice, anyWithinThreshold)
-        
-        # graph here
-        plotData <- filter(slice, isLV)
-        if (nrow(plotData)>0) {
-          plotData <- mutate(plotData, 
-                             radius.mean.area = pi*s.radius.mean^2,
-                             radius.max.area = pi*s.radius.max^2,
-                             radius.min.area = pi*s.radius.min^2) %>% 
-            gather(metric, area, s.area, starts_with("radius."))
-          print(ggplot(plotData, aes(x=Time, y=area, colour=metric))+geom_line()+
-                  ggtitle(paste("Segment area over Time for ID",
-                                unique(slice$Id),"Slice",unique(slice$Slice))))
+        print(unique(getImageFile(firstImage)))
+        print("WARN: Not all image files exist on this system")
+      }
+      View(slice)
+      
+      # save data
+      newData <- filter(slice, !is.na(isLV)) %>% select( 
+        Id, Slice, Time,   # uniquely identifies image via join to playlist
+        UUID,              # unique segment identifier
+        starts_with("m."), # standard moments & shape attributes 
+        starts_with("s."),
+        isLV)
+      
+      if(nrow(newData) > 0) {
+        if (is.null(segPredictSet)) {
+          segPredictSet <- newData
+        } else {
+          # TODO check both are compatible
+          removedSet <- setdiff(names(segPredictSet), names(newData))
+          addedSet <- setdiff(names(newData), names(segPredictSet))
+          diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
+          if (length(removedSet) + length(addedSet) > 0) {
+            print("Existing:")
+            print(names(segPredictSet))
+            print("New:")
+            print(names(newData))
+            print(paste(diffSet, collapse=","))
+            stop("Datasets do not match up. Please consider removing or fixing segment classification.")
+          }
+          
+          nDrop <- nrow(filter(segPredictSet, 
+                               Slice %in% newData$Slice,
+                               Id %in% newData$Id))
+          if (nDrop > 0) {
+            cat("...dropping",nDrop,"rows from previous results",fill=T)
+          }
+          
+          segPredictSet <- rbind(filter(segPredictSet, 
+                                        !(Slice %in% newData$Slice & 
+                                            Id %in% newData$Id)), 
+                                 newData)
         }
-        
-        showAllSliceImages(slice)
-        
-        identifiedCorrectly <- readline("Are all segments identified correctly (y/n): ")
-        if (identifiedCorrectly != "y") {
-          # Set only segments of this image
-          slice$isLV <- NA
-          slice <- slice[Time == slice$Time[1], isLV := (segIndex == identifiedLVSegment)]
-        }
+      } else {
+        print("No new data added")
       }
-    }
-    View(slice)
-    
-    # save data
-    newData <- filter(slice, !is.na(isLV)) %>% select( 
-      Id, Slice, Time,   # uniquely identifies image via join to playlist
-      UUID,              # unique segment identifier
-      starts_with("m."), # standard moments & shape attributes 
-      starts_with("s."),
-      isLV)
-    
-    if (is.null(segPredictSet)) {
-      segPredictSet <- newData
-    } else {
-      # TODO check both are compatible
-      removedSet <- setdiff(names(segPredictSet), names(newData))
-      addedSet <- setdiff(names(newData), names(segPredictSet))
-      diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
-      if (length(removedSet) + length(addedSet) > 0) {
-        print("Existing:")
-        print(names(segPredictSet))
-        print("New:")
-        print(names(newData))
-        print(paste(diffSet, collapse=","))
-        stop("Datasets do not match up. Please consider removing or fixing segment classification.")
-      }
-      
-      nDrop <- nrow(filter(segPredictSet, 
-                           Slice %in% newData$Slice,
-                           Id %in% newData$Id))
-      if (nDrop > 0) {
-        cat("...dropping",nDrop,"rows from previous results",fill=T)
-      }
-      
-      segPredictSet <- rbind(filter(segPredictSet, 
-                                    !(Slice %in% newData$Slice & 
-                                        Id %in% newData$Id)), 
-                             newData)
-      
     }
     
     segmentedByID <- left_join(unique(select(sliceInfo, Dataset, Id)), unique(select(segPredictSet, Id, isLV))) %>% group_by(Dataset, Id) %>% summarise(hasSegs = any(isLV)) %>% filter(hasSegs)

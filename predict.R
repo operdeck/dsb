@@ -68,13 +68,19 @@ if (nrow(filter(segClassificationSet, is.na(Dataset))) > 0) {
   segClassificationSet <- filter(segClassificationSet, !is.na(Dataset))
   s <- unique(select(classifiedSegmentsOlder, Id, Slice, Time))
   allCandidateSegments <- left_join(s, allSegments, by=c("Id","Slice","Time"))
+  prevId <- -1
+  prevSlice <- -1
   for (i in seq(nrow(s))) {
     candidateSegments <- filter(allCandidateSegments, Id==s$Id[i], Slice==s$Slice[i], Time==s$Time[i]) # all segs in this image
     lv <- left_join(s[i], classifiedSegmentsOlder, by=c("Id","Slice","Time")) %>% filter(isLV) # classified LV in this image
     
-    # TODO only report per slice - not for every image
-    cat("Matching existing classification to new segmentation for Id", s$Id[i], "Slice", s$Slice[i], "Image", s$Time[i], 
-        "candidates:", nrow(candidateSegments), "classified:", nrow(lv), fill=T)
+    if (!(prevId == s$Id[i] & prevSlice == s$Slice[i])) {
+      cat("Matching existing classification to new segmentation for Id", 
+          s$Id[i], "Slice", s$Slice[i], "# images", nrow(filter(s, Id == s$Id[i], Slice == s$Slice[i])), 
+          "candidates:", nrow(candidateSegments), "classified:", nrow(lv), fill=T)
+      prevId <- s$Id[i]
+      prevSlice <- s$Slice[i]
+    }
     
     candidateSegments$isLV <- NA
     candidateSegments <- candidateSegments[,names(segClassificationSet),with=F] # make sure cols have the same order
@@ -86,8 +92,7 @@ if (nrow(filter(segClassificationSet, is.na(Dataset))) > 0) {
       candidateSegments$isLV <- (candidateSegments$segIndex == segLV & distToLVSeg < 5) # abs distance threshold like in classify.R
       segClassificationSet <- rbind(segClassificationSet, candidateSegments)
     } else {
-      cat("WARN:",nrow(lv),"LV segments in one image", fill=T)
-      print(s[i,])
+      cat("WARN:",nrow(lv),"LV segments in image", s$Time[i], fill=T)
     }
     
     segClassificationSet <- rbind(segClassificationSet, candidateSegments)
@@ -112,18 +117,7 @@ l <- unique(select(segClassificationSet, Id, Slice))
 for (i in seq(nrow(l))) {
   slice <- filter(segClassificationSet, Id==l$Id[i], Slice==l$Slice[i])
   
-  plotData <- mutate(filter(slice, isLV), 
-                     area.radius.mean = pi*radius.mean^2,
-                     area.radius.max = pi*radius.max^2,
-                     area.radius.min = pi*radius.min^2) %>% 
-    gather(metric, area, starts_with("area"))
-  if (nrow(filter(slice, isLV)) > 1) {
-    print(ggplot(plotData, aes(x=Time, y=area, colour=metric))+geom_line()+geom_point()+
-            ggtitle(paste("Segment area over Time for ID",
-                          unique(slice$Id),"Slice",unique(slice$Slice))))
-  } else {
-    cat("No image with identified LV at all for slice:", l$Id[i], l$Slice[i], fill=T)
-  }
+  plotSlice(filter(slice, isLV))
 }
 
 # Build up the data set for training and classification
@@ -133,12 +127,10 @@ for (i in seq(nrow(l))) {
 
 segClassificationSet <- select(segClassificationSet, 
                                -m.cx, -m.cy, -distToROI,
-                               -Id, -Slice, -Time, -Dataset, -ImgType, -Offset, 
-                               -segIndex)
+                               -Id, -Slice, -Time, -Dataset, -ImgType, -Offset, -segIndex)
+# We keep the meta-attributes as these are useful for the further roll-up
 allSegments <- select(allSegments, 
-                      -m.cx, -m.cy, -distToROI,
-                      # we keep the meta-attributes as these are useful for the further roll-up
-                      -segIndex)
+                      -m.cx, -m.cy, -distToROI)
 
 trainData <- segClassificationSet
 valSet <- sample.int(nrow(trainData), 0.20*nrow(trainData))
@@ -187,171 +179,85 @@ write.csv(select(trainData, -UUID), "segmentTrainSet.csv", row.names=F)
 # Apply on full dataset
 cat("Apply segment model to", nrow(allSegments), "segments", fill=T)
 allSegments$pLV <- predict(leftVentricleSegmentModel, 
-                           as.matrix(select(allSegments, -Id, -Slice, -Time, -Dataset, -ImgType, -Offset, -UUID)))
+                           as.matrix(select(allSegments, -Id, -Slice, -Time, -Dataset, -ImgType, -Offset, -segIndex, -UUID)))
 
+# Aggregation to Image level
 imageData <- left_join(group_by(allSegments, Id, Slice, Time) %>%
-                         summarise(maxpLV = max(pLV),
-                                   isLV = (pLV == max(pLV))) %>%
-                         filter(isLV),
+                         summarise(segIndex = segIndex[which.max(pLV)]),
                        allSegments)
-stop()
-segInfo <- left_join(segInfo, group_by(segInfo, Id, Slice, Time) %>% 
-                       summarise(lvSeg = segIndex[which.max(pLeftVentricle)]) )
+# plotSlice( filter(imageData, Id == 657, Slice == 9))
 
-stop()
+sliceList <- fread("slicelist.csv")
+imageData <- left_join(imageData, sliceList)
+pLeftVentricle <- cut(imageData$pLV,10)
+# This should show that lower slice order have a higher probabilities for the left ventricle (better segmentation)
+print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_histogram()+
+        ggtitle("LV Probability vs Slice Order") +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
-# Read all segment info from all datasets
-for (dataset in c('train','validate','test')) { 
-  predictSet <- NULL
-  fname <- paste("segments-",dataset,".csv",sep="")
-  if (file.exists(fname)) {
-    segInfo <- fread(fname)
-    cat("Id's:",unique(segInfo$Id),fill=T)
-    
-    # Select only the middle segment for each Id (TODO: consider broader selection - see 'classify.R')
-    slicesToConsider <- group_by(segInfo, Id) %>% 
-      summarise(midSlice = sort(unique(Slice))[ceiling(length(unique(Slice))/2)]) 
-    segInfo <- left_join(segInfo, slicesToConsider) %>% filter(Slice == midSlice)
-    
-    newData <- segInfo[, -which(sapply(segInfo, class) == "character"), with=F]
-    newData <- newData[, -which(names(newData) %in% dropCols),with=F]
-    setkey(newData, Id, Slice, Time, segIndex)
-    setkeyv(segInfo, key(newData))
-    segInfo$pLeftVentricle <- predict(leftVentricleSegmentModel, as.matrix(newData))
-    segInfo <- left_join(segInfo, group_by(segInfo, Id, Slice, Time) %>% 
-                           summarise(lvSeg = segIndex[which.max(pLeftVentricle)]) )
-    # show lv segments:
-    # print(unique(select(segInfo, Id, Slice, Time, lvSeg)))
-    
-    cat("AUC for train data set:",
-        auc(segData$isLV, predict(leftVentricleSegmentModel, as.matrix(trainData))),
-        fill=T)
-    
-    lvSegsOnly <- group_by(segInfo, Id, Slice, Time) %>% 
-      summarise(UUID = UUID[which.max(pLeftVentricle)]) %>% left_join(segInfo)
-    
-    # TODO limit to only first 10 id's (or so)
-    print(ggplot(filter(lvSegsOnly), aes(x=Time, y=sliceVolume, colour=factor(Id)))+geom_line()+
-            ggtitle(paste("Volume over Time")))
-    
-    # Roll up over Time and Slice dimensions
-    
-    # TODO: roll up time dim. For all selected attributes, add sd, mean, min and max or p10 and p90
-    timeRollUpConstCols <- c("Offset","sliceLocation","sliceThickness")
-    timeRollUpCols <- c("m.majoraxis","m.eccentricity","m.theta",
-                        "s.area","s.perimeter",
-                        "s.radius.mean","s.radius.sd","s.radius.min","s.radius.max",
-                        "roundness","dist","sliceArea","sliceVolume")
-    allSlices <- unique(select(lvSegsOnly, Id, Slice))
-    for (s in 1:nrow(allSlices)) {
-      rollUpData <- filter(lvSegsOnly, Id == allSlices[s]$Id, Slice == allSlices[s]$Slice)
-      rollUpData <- rollUpData[, which(names(rollUpData) %in% timeRollUpCols),with=F]
-      
-      data_mean <- sapply(rollUpData, mean)
-      names(data_mean) <- paste(names(rollUpData), "mean", sep="_")
-      
-      data_sd <- sapply(rollUpData, sd)
-      names(data_sd) <- paste(names(rollUpData), "sd", sep="_")
-      
-      data_quantiles <- sapply(rollUpData, quantile, probs=c(0.1,0.5,0.9))
-      data_p10 <- data_quantiles[1,]
-      names(data_p10) <- paste(names(rollUpData), "p10", sep="_")
-      data_p50 <- data_quantiles[2,]
-      names(data_p50) <- paste(names(rollUpData), "p50", sep="_")
-      data_p90 <- data_quantiles[3,]
-      names(data_p90) <- paste(names(rollUpData), "p90", sep="_")
-      
-      # TODO add 'first' for values relative constant to Time (Slice factors)
-      data_aggregated <- c(Id = allSlices[s]$Id, Slice = allSlices[s]$Slice, 
-                           data_mean, data_sd, data_p10, data_p50, data_p90)
-      
-      if (is.null(predictSet)) {
-        predictSet <- as.data.frame(t(data_aggregated))
-      } else {
-        predictSet <- rbind(predictSet,t(data_aggregated))
-      }
-    }
-    
-    if (dataset == 'train') {
-      train_predictSet <- predictSet
-    } else if (dataset == 'validate') {
-      validate_predictSet <- predictSet
-    } else if (dataset == 'test') {
-      test_predictSet <- predictSet
-    } else {
-      stop("Unknown dataset...")
-    }
-    
-    # TODO roll up by Slice (later...)
-    
-    
-  }
+# TODO maybe filter on pLV threshold (0.5 or so)
+
+sliceData <- group_by(imageData, Id, Slice) %>%
+  summarise(maxArea = max(area),
+            minArea = min(area),
+            meanArea = mean(area),
+            maxPerimeter = max(perimeter),
+            minPerimeter = min(perimeter),
+            meanPerimeter = mean(perimeter),
+            # what happened to slice thickness etc?
+            SliceCount = first(SliceCount),
+            SliceRelIndex = first(SliceRelIndex),
+            SliceOrder = first(SliceOrder)) %>%
+  filter(SliceOrder <= 2) # Clearly, only the middle slices make some sense
+
+# Plot the areas for a couple of slices
+for (n in seq(20)) {
+  idData <- filter(sliceData, Id==n) %>% gather(metric, area, ends_with("Area"))
+  print(ggplot(idData, aes(x=Slice, y=area, colour=metric))+geom_line()+geom_point()+ggtitle(paste("Id",n)))
+  idData <- filter(sliceData, Id==n) %>% gather(metric, perimeter, ends_with("Perimeter"))
+  print(ggplot(idData, aes(x=Slice, y=perimeter, colour=metric))+geom_line()+geom_point()+ggtitle(paste("Id",n)))
 }
 
-train <- fread('data/train.csv') 
-print(ggplot(data=filter(train, Id %in% train_predictSet$Id) %>% gather(Phase, Volume, -Id), 
-             aes(x=factor(Id, levels=sort(unique(Id))), y=Volume))+geom_line(size=5)+
-        ggtitle("Actual volume in train set"))
+# Aggregates by Id...
+# TODO get more meta-data in, and what happened to slice thickness etc??
+# now only two predictors...
+caseData <- group_by(sliceData, Id) %>%
+  summarise(maxVolume = sum(maxArea),
+            minVolume = sum(minArea),
+            SliceCount = first(SliceCount))
 
-# Prepare for predictions
+# Train data
+trainVolumes <- fread('data/train.csv') 
+caseData <- left_join(caseData, trainVolumes)
 
-# Select only the N most correlated fields with N = nrow / 2 (only because train set is limited sometimes)
-predictData <- left_join(train_predictSet, train, "Id")
-predictDataPredictorsOnly <- select(predictData, -contains("stole"), -Id, -Slice)
-nPreds <- min(ceiling(sqrt(nrow(predictData))), ncol(predictDataPredictorsOnly))
-predNames <- names(-sort(-sapply(predictDataPredictorsOnly, 
-                                 function(x) {return (mean(abs(cor(predictData$Diastole, x)),
-                                                           abs(cor(predictData$Systole, x))))}))[1:nPreds])
-predictDataPredictorsOnly <- predictDataPredictorsOnly[, which(names(predictDataPredictorsOnly) %in% predNames)]
+# TODO deal with missing Id's - see slicelist
 
 # Develop model (TODO: on -validation set)
-# TODO of course we will create more powerful models when there is more data
-systole_m <- lm(predictData$Systole ~ ., data = predictDataPredictorsOnly)
-diastole_m <- lm(predictData$Diastole ~ ., data = predictDataPredictorsOnly)
+systole_m <- lm(caseData$Systole ~ ., data = select(caseData, -Systole, -Diastole))
+diastole_m <- lm(caseData$Diastole ~ ., data = select(caseData, -Systole, -Diastole))
 
-resultData <- data.frame(predictData, 
+resultData <- data.frame(caseData, 
                          Systole_pred = predict(systole_m, 
-                                                newdata = predictDataPredictorsOnly),
+                                                newdata = caseData),
                          Diastole_pred = predict(diastole_m, 
-                                                 newdata = predictDataPredictorsOnly))
+                                                 newdata = caseData))
 
-# Plot actual vs predicted
-plotData <- select(resultData, contains("Diastole"), Id) %>% gather(Source, Volume, -Id)
-plotData$Source <- factor(plotData$Source, levels=sort(unique(as.character(plotData$Source))))
-print(ggplot(plotData, 
-             aes(x=Id, y=Volume, fill=Source)) + geom_bar(stat="identity",position="dodge")+
-        ggtitle("Diastole predictions"))
-
-plotData <- select(resultData, contains("Systole"), Id) %>% gather(Source, Volume, -Id)
-plotData$Source <- factor(plotData$Source, levels=sort(unique(as.character(plotData$Source))))
-print(ggplot(plotData, 
-             aes(x=Id, y=Volume, fill=Source)) + geom_bar(stat="identity",position="dodge")+
-        ggtitle("Systole predictions"))
-
-print("Correlations:")
-print(cor(resultData$Systole, resultData$Systole_pred))
-print(cor(resultData$Diastole, resultData$Diastole_pred))
-
-#TODO: report accuracy (RMSD?) on validation set
-
-#TODO: translate predicted values to distributions of the volumes
-
+# Plot the results...
 plotData <- select(resultData, contains("stole"), Id) %>% 
   gather(Phase, Actual, -Id, -Diastole_pred, -Systole_pred) %>%
   mutate(Predicted = ifelse(Phase == "Diastole", Diastole_pred, Systole_pred))
 print(ggplot(plotData, aes(x=Actual,y=Predicted,colour=Phase))+geom_point()+stat_smooth(method = "lm")+ggtitle("Actual vs Predicted..."))
 
-# predict on validate and test sets
+print("Correlations:")
+print(cor(resultData$Systole, resultData$Systole_pred, use="complete.obs"))
+print(cor(resultData$Diastole, resultData$Diastole_pred, use="complete.obs"))
 
-validate_resultData <- data.frame(select(validate_predictSet, Id), 
-                                  Systole_pred = predict(systole_m, newdata = validate_predictSet),
-                                  Diastole_pred = predict(diastole_m, newdata = validate_predictSet))
-
-print(head(validate_resultData))
+#TODO: report accuracy (RMSD?) on validation set
 
 # now, translate this to probabilities by volume
 # note, predictions can be NA, negative or otherwise out of bounds,
 # also make sure Systole << Diastole - otherwise just fall back to default
+# also make sure all IDs are covered
 
 
 
