@@ -99,11 +99,8 @@ segmentImagesForOneSlice <- function(imgMetaData) {
     coords <- as.data.frame(pos2coord(pos=which(img_roi>0),dim.mat=dim(img_roi)))
     names(coords) <- c('x','y')
     coords$distToROI <- floor(sqrt((coords$x - roi$m.cx)^2+(coords$y - roi$m.cy)^2))
-    roi$radius <- quantile(coords$distToROI, probs=c(0.95))
+    roi$radius <- quantile(coords$distToROI, probs=c(0.90))
     if (roi$radius > 1) {
-      #     print(qplot(coords$distToROI, stat = "ecdf", geom = "step")+
-      #             geom_vline(xintercept=roi$radius))
-      
       roi_mask <- matrix(0, nrow=dim(img_roi)[1], ncol=dim(img_roi)[2])
       roi_mask <- drawCircle(roi_mask, x=roi$m.cx, y=roi$m.cy, roi$radius, col=1, fill=T)
       img_masked <- img_original*roi_mask
@@ -111,18 +108,25 @@ segmentImagesForOneSlice <- function(imgMetaData) {
       img_original <- img_original*scale # scale original image wrt ROI
       
       kern <- makeBrush(5, shape= 'disc')
-      #img_masked <- opening(img_original*roi_mask, kern)
-      
-      # Segmentation of the original image
-      #img_thresholded <- (img_masked > 2*otsu(img_masked)) # bit iffy here
-      #img_eroded <- opening(img_thresholded, kern)
-      #img_segmented <- fillHull(bwlabel(img_thresholded))
       
       img_blurred <- normalize(opening(img_original, kern))
-      img_thresholded <- img_blurred > otsu(img_blurred) # Otsu€™s threshold 
+      img_thresholded <- img_blurred > otsu(img_blurred) # Otsu??s threshold 
       img_segmented <- fillHull(bwlabel(img_thresholded))
+
+      # Get segment meta data and select only the segments within the ROI
+      segmentInfo <- cbind(imgMetaData[i,],
+                           data.frame(computeFeatures.moment(img_segmented)),
+                           data.frame(computeFeatures.shape(img_segmented)))
+      segmentInfo$distToROI <- sqrt((segmentInfo$m.cx - roi$m.cx)^2 + (segmentInfo$m.cy - roi$m.cy)^2)
+      segmentInfo$segIndex <- seq(nrow(segmentInfo))
+      segmentInfo$UUID <- sapply(1:nrow(segmentInfo),UUIDgenerate) # unique ID for each segment
       
-      img_comb <- EBImage::combine(drawCircle(colorLabels(img_segmented), x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
+      # Only keep segments inside the ROI
+      segmentInfo <- filter(segmentInfo, distToROI < roi$radius)
+      img_colourSegs <- colorLabels(rmObjects(img_segmented, 
+                                              setdiff(seq(max(img_segmented)),segmentInfo$segIndex)))
+      
+      img_comb <- EBImage::combine(drawCircle(img_colourSegs, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
                                    drawCircle(toRGB(img_original), x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
                                    toRGB(img_subtracted),
                                    #toRGB(img_masked),
@@ -131,19 +135,6 @@ segmentImagesForOneSlice <- function(imgMetaData) {
                                    toRGB(img_roi))
       display(img_comb,all=T,method="raster")
       text(10,20,getImageFile(imgMetaData[i,]),col="yellow",pos=4)
-      
-      # Get segment meta data and select only the segments within the ROI
-      segmentInfo <- cbind(imgMetaData[i,],
-                           data.frame(computeFeatures.moment(img_segmented)),
-                           data.frame(computeFeatures.shape(img_segmented)))
-      #segmentInfo$roundness <- 4*pi*segmentInfo$s.area/(segmentInfo$s.perimeter^2)
-      segmentInfo$distToROI <- sqrt((segmentInfo$m.cx - roi$m.cx)^2 + (segmentInfo$m.cy - roi$m.cy)^2)
-      #     segmentInfo$imgIndex <- i # same as Time
-      segmentInfo$segIndex <- 1:nrow(segmentInfo)
-      segmentInfo$UUID <- sapply(1:nrow(segmentInfo),UUIDgenerate) # unique ID for each segment
-      
-      # Only keep segments inside the ROI
-      segmentInfo <- filter(segmentInfo, distToROI < roi$radius)
       
       if (is.null(sliceSegmentation)) {
         sliceSegmentation <- segmentInfo
@@ -158,44 +149,8 @@ segmentImagesForOneSlice <- function(imgMetaData) {
   return(sliceSegmentation)
 }
 
-# print(segmentImagesForOneSlice(filter(imgMetaData, Slice == sort(unique(imgMetaData$Slice))[2])))
-# stop()
-
-# processSegmentedImagesForOneSlice <- function(segmentedImages)
-# {
-#   allSegments <- NULL
-#   for (img_original in allImages) { 
-#     segments <- cbind(as.data.frame(computeFeatures.shape(img_segmented)), 
-#                       as.data.frame(computeFeatures.moment(img_segmented)))
-#     segments$roundness <- 4*pi*segments$s.area/(segments$s.perimeter^2)
-#     segments$segmentNumber <- 1:nrow(segments)
-#     
-#     if (is.null(allSegments)) {
-#       allSegments <- segments
-#       maxSegmentNumber <- max(allSegments$segmentNumber)
-#     } else {
-#       for (i in 1:nrow(segments)) {
-#         # find previous segments at approx the same position
-#         distance <- sqrt((segments$m.cx[i] - allSegments$m.cx)^2 + (segments$m.cy[i] - allSegments$m.cy)^2)
-#         # TODO eliminate doubles (segNr already in segments)
-#         a <- which.min(distance)
-#         if (distance[a] < 10) {
-#           segments$segmentNumber[i] <- allSegments$segmentNumber[a]
-#         } else {
-#           maxSegmentNumber <- maxSegmentNumber+1
-#           segments$segmentNumber[i] <- maxSegmentNumber
-#         }
-#       }
-#       allSegments <- rbind(allSegments, segments)
-#       for (i in 1:nrow(segments)) {
-#         text(x = segments$m.cx[i], y = segments$m.cy[i], 
-#              label = segments$segmentNumber[i], col = "orange")
-#       }
-#     } # segments of one image
-#     allSegments$segmentNumber <- as.integer(allSegments$segmentNumber)
-#   }
-# }
-
+# TODO factor out - seperate script
+# add image dimensions
 playlist <- NULL
 for (dataset in datasetFolders) {
   datasetDir <- paste("data",dataset,sep="/")
@@ -212,7 +167,7 @@ for (dataset in datasetFolders) {
                                 ImgType = "sax",
                                 Slice = slices,
                                 SliceCount = length(slices),
-                                SliceRelIndex = seq(length(slices)),
+                                SliceRelIndex = seq(length(slices)), # TODO: 'SliceIndex'
                                 SliceOrder = midOrderSeqKeepSibblingsTogether(length(slices)),
                                 stringsAsFactors = F)
       if (is.null(playlist)) {
@@ -223,7 +178,6 @@ for (dataset in datasetFolders) {
     }
   }
 }
-# playlist <- left_join(playlist, group_by(playlist, Id) %>% summarise(nSlices=n()))
 
 # Show quick summary of the datasets & save for downstream use
 print(select(playlist, Dataset, Id) %>% unique() %>% group_by(Dataset) %>% summarise(nIds = n()))
@@ -252,7 +206,6 @@ for (dataset in datasetFolders) {
 
 # Figure out which slices have been processed and have one of their two sibblings processed also (these are complete).
 # This drives the order of processing of the slices
-
 po <- left_join(select(playlist, Id, Slice), 
                 select(allSegmentationInfo, Id, Slice, Dataset), by = c("Id", "Slice")) %>% 
   unique() %>%
@@ -277,7 +230,8 @@ playlist <- left_join(left_join(po,
 
 # Here we order the playlist:
 # - first incomplete ID's, then unprocessed slices by their special 'mid order'
-playlist <- arrange(playlist, anySliceCompletePerId, isProcessed, SliceOrder, Dataset)
+playlist$Random <- runif(max(playlist$Id))[playlist$Id] # keep ID's together
+playlist <- arrange(playlist, anySliceCompletePerId, isProcessed, SliceOrder, Dataset, Random)
 
 for (nextSlice in seq(nrow(playlist))) {
   cat("Processing",playlist$Dataset[nextSlice],
@@ -287,6 +241,7 @@ for (nextSlice in seq(nrow(playlist))) {
       fill=T)
   
   # Add slice meta data and all images
+  # TODO - do when creating playlist, add dim x/y, pixelspacing etc + nr of images
   imgMetaData <- listSliceImages(select(playlist[nextSlice,], Id, Dataset, ImgType, Slice, SliceRelIndex))
   
   # NB slice thickness etc to be derived in predict, not here
