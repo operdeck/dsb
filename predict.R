@@ -195,27 +195,29 @@ print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_h
         ggtitle("LV Probability vs Slice Order") +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
-# TODO maybe filter on pLV threshold (0.5 or so)
+idIncomplete <- unique(imageData$Id[which(!complete.cases(imageData))])
+cat(length(idIncomplete),"incomplete cases for image data, Id's:",idIncomplete,fill=T)
 
-sliceData <- group_by(imageData, Id, Slice) %>%
-  summarise(maxArea = max(area),
-            minArea = min(area),
-            meanArea = mean(area),
-            maxPerimeter = max(perimeter),
-            minPerimeter = min(perimeter),
-            meanPerimeter = mean(perimeter),
-            # what happened to slice thickness etc?
-            SliceCount = first(SliceCount),
-            SliceRelIndex = first(SliceRelIndex),
-            SliceOrder = first(SliceOrder)) %>%
-  filter(SliceOrder <= 2) # Clearly, only the middle slices make some sense
+# TODO maybe filter on pLV threshold (0.5 or so)
+pSegmentThreshold <- 0.5
+sliceData <- left_join(sliceList, group_by(filter(imageData, pLV >= pSegmentThreshold), Id, Slice) %>%
+                         summarise(maxArea = max(area,na.rm=T),
+                                   minArea = min(area,na.rm=T),
+                                   meanArea = mean(area,na.rm=T),
+                                   maxPerimeter = max(perimeter,na.rm=T),
+                                   minPerimeter = min(perimeter,na.rm=T),
+                                   meanPerimeter = mean(perimeter,na.rm=T))) %>%
+  filter(SliceOrder <= 2)
+
+idIncomplete <- unique(sliceData$Id[which(!complete.cases(sliceData))])
+cat(length(idIncomplete),"incomplete slices for slice data, Id's:",idIncomplete,fill=T)
 
 # Plot the areas for a couple of slices
 for (n in seq(20)) {
   idData <- filter(sliceData, Id==n) %>% gather(metric, area, ends_with("Area"))
-  print(ggplot(idData, aes(x=Slice, y=area, colour=metric))+geom_line()+geom_point()+ggtitle(paste("Id",n)))
-  idData <- filter(sliceData, Id==n) %>% gather(metric, perimeter, ends_with("Perimeter"))
-  print(ggplot(idData, aes(x=Slice, y=perimeter, colour=metric))+geom_line()+geom_point()+ggtitle(paste("Id",n)))
+  if (!any(is.na(idData))) {
+    print(ggplot(idData, aes(x=Slice, y=area, colour=metric))+geom_line()+geom_point()+ggtitle(paste("Id",n)))
+  }
 }
 
 # Aggregates by Id...
@@ -241,12 +243,36 @@ resultData <- data.frame(caseData,
                                                 newdata = caseData),
                          Diastole_pred = predict(diastole_m, 
                                                  newdata = caseData))
+# TODO: iffy
+# consider IQR*1.5 + Q3 and Q1 - IQR*1.5
+resultDataFixed <- resultData
+resultDataFixed$Systole_pred  <- ifelse(is.na(resultData$Systole_pred), mean(trainVolumes$Systole), resultData$Systole_pred)
+resultDataFixed$Diastole_pred <- ifelse(is.na(resultData$Diastole_pred), mean(trainVolumes$Diastole), resultData$Diastole_pred)
+
+resultDataFixed$Systole_pred  <- pmin(pmax(resultDataFixed$Systole_pred, min(trainVolumes$Systole)),max(trainVolumes$Systole))
+resultDataFixed$Diastole_pred <- pmin(pmax(resultDataFixed$Diastole_pred, min(trainVolumes$Diastole)),max(trainVolumes$Diastole))
+
+resultDataFixed$Systole_pred  <- ifelse((resultDataFixed$Systole_pred > resultDataFixed$Diastole_pred), mean(resultDataFixed$Systole_pred, resultDataFixed$Diastole_pred), resultDataFixed$Systole_pred)
+resultDataFixed$Diastole_pred <- ifelse((resultDataFixed$Systole_pred > resultDataFixed$Diastole_pred), mean(resultDataFixed$Systole_pred, resultDataFixed$Diastole_pred), resultDataFixed$Diastole_pred)
+
+resultDataFixed$Fixed <- 
+  (resultDataFixed$Systole_pred != resultData$Systole_pred) |
+  (resultDataFixed$Diastole_pred != resultData$Diastole_pred)
+resultDataFixed$Fixed <- is.na(resultDataFixed$Fixed) | resultDataFixed$Fixed
+nFixed <- sum(resultDataFixed$Fixed)
+cat("Fixed",nFixed,"out-of-range or missing predictions for Id's:",unique(resultDataFixed$Id[which(resultDataFixed$Fixed)]),fill=T)
+resultData <- resultDataFixed
+
 
 # Plot the results...
 plotData <- select(resultData, contains("stole"), Id) %>% 
-  gather(Phase, Actual, -Id, -Diastole_pred, -Systole_pred) %>%
+  gather(Phase, Actual, -Id, -ends_with("_pred")) %>%
   mutate(Predicted = ifelse(Phase == "Diastole", Diastole_pred, Systole_pred))
-print(ggplot(plotData, aes(x=Actual,y=Predicted,colour=Phase))+geom_point()+stat_smooth(method = "lm")+ggtitle("Actual vs Predicted..."))
+print(ggplot(plotData, 
+             aes(x=Actual,y=Predicted,colour=Phase))+
+        geom_point()+stat_smooth(method = "lm")+
+        xlim(0, 600)+ylim(0, 600)+geom_abline(slope=1,linetype="dashed")+
+        ggtitle("Actual vs Predicted..."))
 
 print("Correlations:")
 print(cor(resultData$Systole, resultData$Systole_pred, use="complete.obs"))
@@ -259,5 +285,38 @@ print(cor(resultData$Diastole, resultData$Diastole_pred, use="complete.obs"))
 # also make sure Systole << Diastole - otherwise just fall back to default
 # also make sure all IDs are covered
 
+NPROBS <- 600
+TESTIDS <- 501:700
+doHist <- function(data) {
+  h <- rep(0, NPROBS)
+  for (j in (1+as.integer(ceiling(data)))) {
+    h[j:NPROBS] <- h[j:NPROBS]+1
+  }
+  h <- h / length(data)
+}
+hSystole <- doHist(trainVolumes$Systole)
+hDiastole <- doHist(trainVolumes$Diastole)
+mSystole <- round(median(trainVolumes$Systole))
+mDiastole <- round(median(trainVolumes$Diastole))
+translateToProbs <- function(predictedVol, expectedMean, expected)
+{
+  t <- 1:NPROBS - predictedVol + expectedMean
+  t <- ifelse(ifelse(t < 1, 1, t) > NPROBS, NPROBS, ifelse(t < 1, 1, t))
+  return(expected[t])
+}
+subm <- matrix(nrow = 2*length(TESTIDS), ncol = NPROBS)
+for (i in 1:length(TESTIDS)) {
+  Id <- TESTIDS[i]
+  subm[2*i-1,] <- translateToProbs(resultData$Diastole_pred[resultData$Id==Id], mDiastole, hDiastole)
+  subm[2*i,]   <- translateToProbs(resultData$Systole_pred[resultData$Id==Id], mSystole, hSystole)
+}
+subm <- data.frame(Id = as.vector(sapply(TESTIDS,function(n){paste(n,c('Diastole','Systole'),sep="_")})), subm)
+names(subm) <- c('Id', paste("P",0:(NPROBS-1),sep=""))
 
+ds_plot <- gather(subm[1:20,],Volume,Density,-Id)
+ds_plot$Volume <- as.integer(gsub("P(.*)","\\1",ds_plot$Volume))
+# Id <- factor(gsub("(.*)_(.*)","\\1",ds_plot$Id))
+Phase <- factor(gsub("(.*)_(.*)","\\2",ds_plot$Id))
+ggplot(data=ds_plot, aes(x=Volume, y=Density, colour=Phase, alpha=0.3))+geom_line()
 
+write.csv(subm, "submission.csv", row.names=F)
