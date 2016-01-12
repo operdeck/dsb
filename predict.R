@@ -3,6 +3,11 @@
 # aggregates the segment data to have one set of meta-info per ID. Combines this with the 
 # train set to create a model for the Systole and Diastole volumes.
 
+# TODO: with image dimension x/y added we could scale the areas with
+# sum(area all segments)/area(whole image). Linear attributes could be
+# scaled with the square of this. Poor man's approximation of 
+# Voronoi segmentation. Image dimension x/y might be part of slice meta data.
+
 source("util.R")
 
 library(pROC)
@@ -198,7 +203,9 @@ print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_h
 idIncomplete <- unique(imageData$Id[which(!complete.cases(imageData))])
 cat(length(idIncomplete),"incomplete cases for image data, Id's:",idIncomplete,fill=T)
 
-# TODO maybe filter on pLV threshold (0.5 or so)
+# Filter on segmentation threshold. This will cause some images to be
+# dropped but will increase the likelihood that they're segmented 
+# correctly.
 pSegmentThreshold <- 0.5
 sliceData <- left_join(sliceList, group_by(filter(imageData, pLV >= pSegmentThreshold), Id, Slice) %>%
                          summarise(maxArea = max(area,na.rm=T),
@@ -243,6 +250,12 @@ resultData <- data.frame(caseData,
                                                 newdata = caseData),
                          Diastole_pred = predict(diastole_m, 
                                                  newdata = caseData))
+# TODO use predict confidence interval
+# predict(eruption.lm, newdata, interval="confidence") 
+#fit    lwr    upr 
+#1 4.1762 4.1048 4.2476 # default interval is 95%
+
+
 # TODO: iffy
 # consider IQR*1.5 + Q3 and Q1 - IQR*1.5
 resultDataFixed <- resultData
@@ -313,10 +326,22 @@ for (i in 1:length(TESTIDS)) {
 subm <- data.frame(Id = as.vector(sapply(TESTIDS,function(n){paste(n,c('Diastole','Systole'),sep="_")})), subm)
 names(subm) <- c('Id', paste("P",0:(NPROBS-1),sep=""))
 
-ds_plot <- gather(subm[1:20,],Volume,Density,-Id)
+ds_plot <- gather(subm,Volume,Density,-Id)
 ds_plot$Volume <- as.integer(gsub("P(.*)","\\1",ds_plot$Volume))
 # Id <- factor(gsub("(.*)_(.*)","\\1",ds_plot$Id))
 Phase <- factor(gsub("(.*)_(.*)","\\2",ds_plot$Id))
-ggplot(data=ds_plot, aes(x=Volume, y=Density, colour=Phase, alpha=0.3))+geom_line()
+print(ggplot(data=ds_plot, aes(x=Volume, y=Density, colour=Phase))+
+        geom_line(alpha=0.5)+
+        ggtitle("Submissions"))
 
 write.csv(subm, "submission.csv", row.names=F)
+
+# TODO get score on train set & produce LB compatible value (now 0.043564)
+# TODO drop 'test' set, do all training on train
+# segmentation on train+validate
+# classification on train only
+# predict uses both, when test comes along, replace validate by test data
+# TODO segmentation should find boundaries, not objects per se
+# TODO use all slices for segment predictions so we also get more falses
+# TODO can we get confidence interval from predictions?
+

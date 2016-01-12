@@ -4,17 +4,18 @@
 
 # TODO: pick up images first that have not yet been processed and append
 # (unless names have changed)
+# TODO: consider creating slice list seperately (w meta info listSliceImages)
+
+# TODO: for ideas on how to color EBimage segments: http://rpackages.ianhowson.com/bioc/EBImage/man/bwlabel.html
+
+# TODO: for segmentation use Voronoi-based segmentation: http://rpackages.ianhowson.com/bioc/EBImage/man/propagate.html
+# TODO: maybe remove objects outside of ROI in seg: http://rpackages.ianhowson.com/bioc/EBImage/man/rmObjects.html
+# TODO: segm: adaptive thresholding: http://rpackages.ianhowson.com/bioc/EBImage/man/thresh.html
+# TODO: segm: maybe use watershed
+# TODO: voronoi: https://www.bioconductor.org/packages/3.3/bioc/vignettes/EBImage/inst/doc/EBImage-introduction.html#cell-segmentation-example
+
 
 source("util.R")
-
-# after systole = min
-# after diastole = max
-#  ejection fraction = 100 * (Vd - Vs)/Vd
-
-# model with 600 classes??
-# caret can do multi-class see http://stackoverflow.com/questions/15585501/usage-of-caret-with-gbm-method-for-multiclass-classification
-# probs are cumulative?
-# see https://www.kaggle.com/c/second-annual-data-science-bowl/details/evaluation
 
 # see bio image detection stuff
 # http://bioconductor.wustl.edu/bioc/vignettes/EBImage/inst/doc/AnalysisWithEBImage.pdf
