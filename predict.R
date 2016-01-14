@@ -12,6 +12,13 @@ source("util.R")
 
 library(pROC)
 
+# Threshold for LV segment probability
+pSegmentThreshold <- 0.5
+
+# Confidence level for predictions
+confidence <- 0.95
+
+
 # Identify the LV segments in the whole dataset by creating a model
 # from the (manually) identified ones
 classifiedSegments <- fread('segments-predict.csv') 
@@ -206,7 +213,6 @@ cat(length(idIncomplete),"incomplete cases for image data, Id's:",idIncomplete,f
 # Filter on segmentation threshold. This will cause some images to be
 # dropped but will increase the likelihood that they're segmented 
 # correctly.
-pSegmentThreshold <- 0.5
 sliceData <- left_join(sliceList, group_by(filter(imageData, pLV >= pSegmentThreshold), Id, Slice) %>%
                          summarise(maxArea = max(area,na.rm=T),
                                    minArea = min(area,na.rm=T),
@@ -231,9 +237,11 @@ for (n in seq(20)) {
 # TODO get more meta-data in, and what happened to slice thickness etc??
 # now only two predictors...
 caseData <- group_by(sliceData, Id) %>%
-  summarise(maxVolume = sum(maxArea),
-            minVolume = sum(minArea),
-            SliceCount = first(SliceCount))
+  summarise(maxVolume = sum(maxArea, na.rm=T),
+            minVolume = sum(minArea, na.rm=T),
+            maxPerim  = mean(maxPerimeter, na.rm=T),
+            minPerim  = mean(minPerimeter, na.rm=T),
+            SlicePct  = n()/first(SliceCount))
 
 # Train data
 trainVolumes <- fread('data/train.csv') 
@@ -242,45 +250,47 @@ caseData <- left_join(caseData, trainVolumes)
 # TODO deal with missing Id's - see slicelist
 
 # Develop model (TODO: on -validation set)
-systole_m <- lm(caseData$Systole ~ ., data = select(caseData, -Systole, -Diastole))
-diastole_m <- lm(caseData$Diastole ~ ., data = select(caseData, -Systole, -Diastole))
+# TODO: glm or svm?
+systole_m <- lm(caseData$Systole ~ ., 
+                data = select(caseData, -Systole, -Diastole))
+diastole_m <- lm(caseData$Diastole ~ ., 
+                 data = select(caseData, -Systole, -Diastole))
 
 resultData <- data.frame(caseData, 
-                         Systole_pred = predict(systole_m, 
-                                                newdata = caseData),
-                         Diastole_pred = predict(diastole_m, 
-                                                 newdata = caseData))
-# TODO use predict confidence interval
-# predict(eruption.lm, newdata, interval="confidence") 
-#fit    lwr    upr 
-#1 4.1762 4.1048 4.2476 # default interval is 95%
+                         Systole = predict(systole_m, 
+                                           newdata = caseData,
+                                           interval="confidence", level=confidence),
+                         Diastole = predict(diastole_m, 
+                                            newdata = caseData,
+                                            interval="confidence", level=confidence))
 
+cat("Missing cases:",sum(is.na(resultData$Systole.fit) | is.na(resultData$Diastole.fit)),"out of",nrow(resultData),fill=T)
 
-# TODO: iffy
-# consider IQR*1.5 + Q3 and Q1 - IQR*1.5
-resultDataFixed <- resultData
-resultDataFixed$Systole_pred  <- ifelse(is.na(resultData$Systole_pred), mean(trainVolumes$Systole), resultData$Systole_pred)
-resultDataFixed$Diastole_pred <- ifelse(is.na(resultData$Diastole_pred), mean(trainVolumes$Diastole), resultData$Diastole_pred)
-
-resultDataFixed$Systole_pred  <- pmin(pmax(resultDataFixed$Systole_pred, min(trainVolumes$Systole)),max(trainVolumes$Systole))
-resultDataFixed$Diastole_pred <- pmin(pmax(resultDataFixed$Diastole_pred, min(trainVolumes$Diastole)),max(trainVolumes$Diastole))
-
-resultDataFixed$Systole_pred  <- ifelse((resultDataFixed$Systole_pred > resultDataFixed$Diastole_pred), mean(resultDataFixed$Systole_pred, resultDataFixed$Diastole_pred), resultDataFixed$Systole_pred)
-resultDataFixed$Diastole_pred <- ifelse((resultDataFixed$Systole_pred > resultDataFixed$Diastole_pred), mean(resultDataFixed$Systole_pred, resultDataFixed$Diastole_pred), resultDataFixed$Diastole_pred)
-
-resultDataFixed$Fixed <- 
-  (resultDataFixed$Systole_pred != resultData$Systole_pred) |
-  (resultDataFixed$Diastole_pred != resultData$Diastole_pred)
-resultDataFixed$Fixed <- is.na(resultDataFixed$Fixed) | resultDataFixed$Fixed
-nFixed <- sum(resultDataFixed$Fixed)
-cat("Fixed",nFixed,"out-of-range or missing predictions for Id's:",unique(resultDataFixed$Id[which(resultDataFixed$Fixed)]),fill=T)
-resultData <- resultDataFixed
-
+clipUpper <- function(v) {
+  result <- quantile(v, (confidence+1)/2)
+  if (is.na(result) | result < min(v)) {
+    result <- max(v)
+  }
+  return(result)
+}
+clipLower <- function(v) {
+  result <- quantile(v, (1-confidence)/2)
+  if (is.na(result) | result > max(v)) {
+    result <- max(v)
+  }
+  return(result)
+}
+resultData$Systole.fit  <- ifelse(is.na(resultData$Systole.fit),  mean(trainVolumes$Systole), resultData$Systole.fit)
+resultData$Diastole.fit <- ifelse(is.na(resultData$Diastole.fit), mean(trainVolumes$Diastole), resultData$Diastole.fit)
+resultData$Systole.lwr  <- ifelse(is.na(resultData$Systole.lwr),  clipLower(trainVolumes$Systole),  resultData$Systole.lwr)
+resultData$Diastole.lwr <- ifelse(is.na(resultData$Diastole.lwr), clipLower(trainVolumes$Diastole), resultData$Diastole.lwr)
+resultData$Systole.upr  <- ifelse(is.na(resultData$Systole.upr),  clipUpper(trainVolumes$Systole), resultData$Systole.upr)
+resultData$Diastole.upr <- ifelse(is.na(resultData$Diastole.upr), clipUpper(trainVolumes$Diastole), resultData$Diastole.upr)
 
 # Plot the results...
-plotData <- select(resultData, contains("stole"), Id) %>% 
-  gather(Phase, Actual, -Id, -ends_with("_pred")) %>%
-  mutate(Predicted = ifelse(Phase == "Diastole", Diastole_pred, Systole_pred))
+plotData <- select(resultData[which(complete.cases(resultData)),], contains("stole"), Id) %>% 
+  gather(Phase, Actual, -Id, -contains(".")) %>%
+  mutate(Predicted = ifelse(Phase == "Diastole", Diastole.fit, Systole.fit))
 print(ggplot(plotData, 
              aes(x=Actual,y=Predicted,colour=Phase))+
         geom_point()+stat_smooth(method = "lm")+
@@ -288,45 +298,64 @@ print(ggplot(plotData,
         ggtitle("Actual vs Predicted..."))
 
 print("Correlations:")
-print(cor(resultData$Systole, resultData$Systole_pred, use="complete.obs"))
-print(cor(resultData$Diastole, resultData$Diastole_pred, use="complete.obs"))
-
-#TODO: report accuracy (RMSD?) on validation set
-
-# now, translate this to probabilities by volume
-# note, predictions can be NA, negative or otherwise out of bounds,
-# also make sure Systole << Diastole - otherwise just fall back to default
-# also make sure all IDs are covered
+print(cor(resultData$Systole, resultData$Systole.fit, use="complete.obs"))
+print(cor(resultData$Diastole, resultData$Diastole.fit, use="complete.obs"))
 
 NPROBS <- 600
-TESTIDS <- 501:700
-doHist <- function(data) {
-  h <- rep(0, NPROBS)
-  for (j in (1+as.integer(ceiling(data)))) {
-    h[j:NPROBS] <- h[j:NPROBS]+1
-  }
-  h <- h / length(data)
-}
-hSystole <- doHist(trainVolumes$Systole)
-hDiastole <- doHist(trainVolumes$Diastole)
-mSystole <- round(median(trainVolumes$Systole))
-mDiastole <- round(median(trainVolumes$Diastole))
-translateToProbs <- function(predictedVol, expectedMean, expected)
-{
-  t <- 1:NPROBS - predictedVol + expectedMean
-  t <- ifelse(ifelse(t < 1, 1, t) > NPROBS, NPROBS, ifelse(t < 1, 1, t))
-  return(expected[t])
-}
-subm <- matrix(nrow = 2*length(TESTIDS), ncol = NPROBS)
-for (i in 1:length(TESTIDS)) {
-  Id <- TESTIDS[i]
-  subm[2*i-1,] <- translateToProbs(resultData$Diastole_pred[resultData$Id==Id], mDiastole, hDiastole)
-  subm[2*i,]   <- translateToProbs(resultData$Systole_pred[resultData$Id==Id], mSystole, hSystole)
-}
-subm <- data.frame(Id = as.vector(sapply(TESTIDS,function(n){paste(n,c('Diastole','Systole'),sep="_")})), subm)
-names(subm) <- c('Id', paste("P",0:(NPROBS-1),sep=""))
 
-ds_plot <- gather(subm,Volume,Density,-Id)
+# Translate a predicted fit with certain low and high bounds and a confidence interval
+# to a range of probabilities according to a logit sigmoid functions.
+translateToProbs <- function(n.fit, n.low, n.high) 
+{
+  p.low <- (1-confidence)/2
+  p.high <- (confidence+1)/2
+  
+  # alpha, beta and mu are solutions to fitting the logit to the two data points
+  # defined by n.low and n.high vs the probabilities from the confidence interval.
+  mu <- log(1/p.low - 1) / log(1/p.high - 1)
+  alpha <- (mu*n.high - n.low)/(mu - 1)
+  beta <- log(1/p.low - 1)/(alpha - n.low)
+  
+  p <- round(1/(1 + exp(0 - beta*(seq(NPROBS) - alpha))),3)
+  
+  return(p)
+}
+
+# Report on results
+results_Train <- filter(resultData, !is.na(Systole) & !is.na(Diastole))
+results_Test <- filter(resultData, !(Id %in% results_Train$Id))
+results_Summary <- as.data.frame(t(data.frame( train_diastole = as.vector(summary(results_Train$Diastole.fit)),
+                                               test_diastole = as.vector(summary(results_Test$Diastole.fit)),
+                                               train_systole  = as.vector(summary(results_Train$Systole.fit)),
+                                               test_systole  = as.vector(summary(results_Test$Systole.fit)))))
+names(results_Summary) <- names(summary(results_Train$Diastole.fit))
+print("Predictions summary:")
+print(results_Summary)
+
+# Create submission file
+createProbabilities <- function(ds)
+{
+  probs <- matrix(nrow = 2*nrow(ds), ncol = NPROBS)
+  for (i in 1:nrow(ds)) {
+    Id <- ds$Id[i]
+    probs[2*i-1,] <- translateToProbs(ds$Diastole.fit[ds$Id==Id], 
+                                      ds$Diastole.lwr[ds$Id==Id], 
+                                      ds$Diastole.upr[ds$Id==Id])
+    probs[2*i,]   <- translateToProbs(ds$Systole.fit[ds$Id==Id], 
+                                      ds$Systole.lwr[ds$Id==Id], 
+                                      ds$Systole.upr[ds$Id==Id])
+  }
+  probs <- data.frame(Id = as.vector(sapply(ds$Id,function(n){paste(n,c('Diastole','Systole'),sep="_")})), probs)
+  names(probs) <- c('Id', paste("P",0:(NPROBS-1),sep=""))
+
+  return(probs)
+}
+
+testSubmission <- createProbabilities(results_Test)
+write.csv(testSubmission, "submission.csv", row.names=F)
+
+# Plot a few of the results
+ds_plot <- gather(testSubmission[1:10,],Volume,Density,-Id)
 ds_plot$Volume <- as.integer(gsub("P(.*)","\\1",ds_plot$Volume))
 # Id <- factor(gsub("(.*)_(.*)","\\1",ds_plot$Id))
 Phase <- factor(gsub("(.*)_(.*)","\\2",ds_plot$Id))
@@ -334,14 +363,20 @@ print(ggplot(data=ds_plot, aes(x=Volume, y=Density, colour=Phase))+
         geom_line(alpha=0.5)+
         ggtitle("Submissions"))
 
-write.csv(subm, "submission.csv", row.names=F)
+# Report on Kaggle's CRPS score
+# Can probably be done much faster by operating on the whole matrix at once
+trainProbabilities <- createProbabilities(results_Train)
+crps <- 0
+for (i in seq(nrow(results_Train))) {
+  probs1 <- as.vector(as.matrix(trainProbabilities[2*i-1,2:ncol(trainProbabilities)]))
+  truth1 <- ifelse(seq(NPROBS) >= results_Train$Diastole[i], 1, 0)
 
-# TODO get score on train set & produce LB compatible value (now 0.043564)
-# TODO drop 'test' set, do all training on train
-# segmentation on train+validate
-# classification on train only
-# predict uses both, when test comes along, replace validate by test data
-# TODO segmentation should find boundaries, not objects per se
-# TODO use all slices for segment predictions so we also get more falses
-# TODO can we get confidence interval from predictions?
+  probs2 <- as.vector(as.matrix(trainProbabilities[2*i,2:ncol(trainProbabilities)]))
+  truth2 <- ifelse(seq(NPROBS) >= results_Train$Systole[i], 1, 0)
+  
+  crps <- crps + sum((probs1 - truth1)^2, na.rm=T) + sum((probs2 - truth2)^2, na.rm=T)
+}
+crps <- crps/nrow(trainProbabilities)/600
+cat("CRPS score on train set:", crps,fill=T)
 
+# TODO perhaps to cross validation 

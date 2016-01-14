@@ -41,6 +41,12 @@ readInteger <- function(p = "Enter an integer: ")
   return(as.integer(n))
 }
 
+getAllDatasetFolders <- function() {
+  f <- c('train','validate','test')
+  f[sapply(paste("data",f,sep="/"),dir.exists)]
+}
+
+## TODO: clean up both of these - should be obsolete
 datasetFolders <- c('train','validate','test')
 datasetFoldersForSegmentDetection <- c('train','validate')
 

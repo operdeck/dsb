@@ -14,12 +14,18 @@
 # TODO: segm: maybe use watershed
 # TODO: voronoi: https://www.bioconductor.org/packages/3.3/bioc/vignettes/EBImage/inst/doc/EBImage-introduction.html#cell-segmentation-example
 
+# No segmentation (too dark)
+#  train 66 - 15
+#  train  6 - 7
+# TODO: get this automatically from the segmentation (processed but no segs)
+# TODO: save segmented images
 
 source("util.R")
 
 # see bio image detection stuff
 # http://bioconductor.wustl.edu/bioc/vignettes/EBImage/inst/doc/AnalysisWithEBImage.pdf
 
+### TODO this moves to playlist.R
 listSliceImages <- function(sliceInfo) {
   imgFolder <- getImageFolder(sliceInfo)
   imgFiles <- list.files(imgFolder, pattern=".*\\.dcm$")
@@ -149,6 +155,9 @@ segmentImagesForOneSlice <- function(imgMetaData) {
   return(sliceSegmentation)
 }
 
+######### below moves to playlist.R
+
+
 # TODO factor out - seperate script
 # add image dimensions
 playlist <- NULL
@@ -182,6 +191,10 @@ for (dataset in datasetFolders) {
 # Show quick summary of the datasets & save for downstream use
 print(select(playlist, Dataset, Id) %>% unique() %>% group_by(Dataset) %>% summarise(nIds = n()))
 write.csv(playlist, "slicelist.csv", row.names=F)
+
+##### above moves to playlist.R
+
+
 
 allSegmentationInfo <- NULL
 for (dataset in datasetFolders) {
