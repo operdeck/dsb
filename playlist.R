@@ -57,29 +57,6 @@ playlist[is.na(SliceThickness), SliceThickness := mean(SliceThickness, na.rm=T)]
 
 write.csv(playlist, "imagelist.csv", row.names=F)
 
-getImageList <- function(type = "sax")
-{
-  playlist <- fread("imagelist.csv")
-  r <- filter(playlist, ImgType==type)
-  setkey(r, Id, Dataset, ImgType, Slice, FileName)
-  return(r)
-}
-
-getSliceList <- function(type = "sax")
-{
-  oneSliceGroup <- select(getImageList(type), Id, Dataset, ImgType, Offset, starts_with("Slice")) %>% 
-    arrange(Dataset, Id, ImgType, Slice) %>% unique()
-  setkey(oneSliceGroup, Dataset, Id, ImgType, Slice)
-  return(oneSliceGroup)
-}
-
-getIdList <- function(type = "sax")
-{
-  ids <- select(getSliceList(type), Id, Dataset, ImgType, SliceCount) %>% unique()
-  setkey(ids, Id, Dataset, ImgType)
-  return(ids)
-}
-
 # Show quick summary of the datasets & save for downstream use
 print("Results:")
 print(select(getIdList(), Dataset, Id) %>% group_by(Dataset) %>% summarise(n_Ids = n()))

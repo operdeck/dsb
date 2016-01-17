@@ -41,14 +41,14 @@ readInteger <- function(p = "Enter an integer: ")
   return(as.integer(n))
 }
 
-getAllDatasetFolders <- function() {
-  f <- c('train','validate','test')
-  f[sapply(paste("data",f,sep="/"),dir.exists)]
-}
+# getAllDatasetFolders <- function() {
+#   f <- c('train','validate','test')
+#   f[sapply(paste("data",f,sep="/"),dir.exists)]
+# }
 
 ## TODO: clean up both of these - should be obsolete
-datasetFolders <- c('train','validate','test')
-datasetFoldersForSegmentDetection <- c('train','validate')
+# datasetFolders <- c('train','validate','test')
+# datasetFoldersForSegmentDetection <- c('train','validate')
 
 # create mid-ordered sequence
 midOrderSeq <- function(n) {
@@ -69,20 +69,20 @@ getSegmentFile <- function(ds) {
   paste("segments-",ds,".csv",sep="")
 }
 
-getImageFolder <- function(entry) {
-  paste("data",
-        entry$Dataset,
-        entry$Id,
-        "study",
-        paste(entry$ImgType, entry$Slice, sep="_"),
-        sep="/")  
-}
-
-getImageFile <- function(entry) {
-  paste(getImageFolder(entry), 
-        paste("IM-",sprintf("%04d",entry$Offset),"-",sprintf("%04d",entry$Time),".dcm",sep=""),
-        sep="/")
-}
+# getImageFolder <- function(entry) {
+#   paste("data",
+#         entry$Dataset,
+#         entry$Id,
+#         "study",
+#         paste(entry$ImgType, entry$Slice, sep="_"),
+#         sep="/")  
+# }
+# 
+# getImageFile <- function(entry) {
+#   paste(getImageFolder(entry), 
+#         paste("IM-",sprintf("%04d",entry$Offset),"-",sprintf("%04d",entry$Time),".dcm",sep=""),
+#         sep="/")
+# }
 
 # Plot interesting attributes over time for one slice
 plotSlice <- function(slice) {
@@ -99,3 +99,28 @@ plotSlice <- function(slice) {
     cat("No image with identified LV at all for slice:", unique(slice$Id), unique(slice$Slice), fill=T)
   }
 }
+
+getImageList <- function(type = "sax")
+{
+  playlist <- fread("imagelist.csv")
+  r <- filter(playlist, ImgType==type)
+  setkey(r, Id, Dataset, ImgType, Slice, FileName)
+  return(r)
+}
+
+getSliceList <- function(type = "sax")
+{
+  oneSliceGroup <- select(getImageList(type), Id, Dataset, ImgType, Offset, starts_with("Slice")) %>% 
+    arrange(Dataset, Id, ImgType, Slice) %>% unique()
+  setkey(oneSliceGroup, Dataset, Id, ImgType, Slice)
+  return(oneSliceGroup)
+}
+
+getIdList <- function(type = "sax")
+{
+  ids <- select(getSliceList(type), Id, Dataset, ImgType, SliceCount) %>% unique()
+  setkey(ids, Id, Dataset, ImgType)
+  return(ids)
+}
+
+
