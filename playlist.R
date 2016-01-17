@@ -7,8 +7,11 @@ source("Util.R")
 # Now contains all images, also the 3 pair .dcm. Default filters on 'sax'.
 # * using SliceIndex instead of SliceRelIndex
 # * adds FileName
-# TODO: remove slicelist.csv from git, add imagelist.csv
+# * removed slicelist.csv from git, added imagelist.csv
 # Fills in slice thickness etc if they're missing by mean
+# TODO consider extracting patient info from header - possibly interesting for predictions
+#  (0010,0040) Patient's Sex [M]
+#  (0010,1010) Patient's Age [012Y]
 
 print("Listing image files")
 filez <- list.files("data", pattern=".*\\.dcm", recursive=T)
