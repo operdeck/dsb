@@ -33,7 +33,7 @@ sliceMetaData[,
                                                                 seq(sum(One)), 
                                                                 midOrderSeqKeepSibblingsTogether(sum(One))),
             by=c("Dataset", "Id", "ImgType")]
-playlist <- left_join(playlist, sliceMetaData, by=c("Dataset", "Id", "ImgType", "Slice"))
+playlist <- left_join(playlist, sliceMetaData, by=c("Dataset", "Id", "ImgType", "Slice")) %>% select(-One)
 
 print("Reading image data")
 for (n in seq(nrow(playlist))) {
