@@ -1,16 +1,14 @@
 # List all images and save in a .csv file. List contains DICOM meta info
 # and should be run prior to any of the other processing.
+# Running it can take up ca 6 hours for 700 id's
 
 source("Util.R")
 
-# contains all images
-# with image DICOM meta info
-# maybe also add image dimensions
-# using SliceIndex instead of SliceRelIndex
-# removed slicelist.csv from git, add imagelist.csv
-# FileName added
-# for all image types
-# Slice itself not so relevant?
+# Now contains all images, also the 3 pair .dcm. Default filters on 'sax'.
+# * using SliceIndex instead of SliceRelIndex
+# * adds FileName
+# TODO: remove slicelist.csv from git, add imagelist.csv
+# Fills in slice thickness etc if they're missing by mean
 
 print("Listing image files")
 filez <- list.files("data", pattern=".*\\.dcm", recursive=T)
@@ -31,23 +29,32 @@ print("Creating slice groups")
 sliceMetaData <- select(playlist, Dataset, Id, ImgType, Slice) %>% unique() %>% arrange(Dataset, Id, ImgType, Slice)
 sliceMetaData$One <- 1 # trick to do a count within the := operator of data.table
 sliceMetaData[, 
-            c("SliceCount", "SliceIndex", "SliceOrder") := list(sum(One), seq(sum(One)), midOrderSeqKeepSibblingsTogether(sum(One))),
+            c("SliceCount", "SliceIndex", "SliceOrder") := list(sum(One), 
+                                                                seq(sum(One)), 
+                                                                midOrderSeqKeepSibblingsTogether(sum(One))),
             by=c("Dataset", "Id", "ImgType")]
 playlist <- left_join(playlist, sliceMetaData, by=c("Dataset", "Id", "ImgType", "Slice"))
 
 print("Reading image data")
 for (n in seq(nrow(playlist))) {
   img <- playlist[n,]
-  print(img)
+  print(img$FileName)
   dicomHeader <- readDICOMFile(paste("data", img$FileName, sep="/"), pixelData = FALSE)
   pixelSpacing <- extractHeader(dicomHeader$hdr, "PixelSpacing", numeric=FALSE)
-  
-  playlist$PixelSpacing.x[n] <- as.numeric(gsub("^(.*) (.*)$", "\\1", pixelSpacing))
-  playlist$PixelSpacing.y[n] <- as.numeric(gsub("^(.*) (.*)$", "\\2", pixelSpacing))
-  playlist$SliceLocation[n]  <- extractHeader(dicomHeader$hdr, "SliceLocation", numeric=TRUE)
-  playlist$SliceThickness[n] <- extractHeader(dicomHeader$hdr, "SliceThickness", numeric=TRUE)
+
+  playlist[n, "PixelSpacing.x" := as.numeric(gsub("^(.*) (.*)$", "\\1", pixelSpacing))]
+  playlist[n, "PixelSpacing.y" := as.numeric(gsub("^(.*) (.*)$", "\\2", pixelSpacing))]
+  playlist[n, "SliceLocation"  := extractHeader(dicomHeader$hdr, "SliceLocation", numeric=TRUE)]
+  playlist[n, "SliceThickness" := extractHeader(dicomHeader$hdr, "SliceThickness", numeric=TRUE)]
 }
-# TODO - fill in missings
+print("Fill missing")
+cat("Incomplete cases:",sum(!complete.cases(playlist)),"of",nrow(playlist),fill=T)
+# Fill in missings. Maybe should do a (tree) model instead of just mean.
+playlist[is.na(PixelSpacing.x), PixelSpacing.x := mean(PixelSpacing.x, na.rm=T)]
+playlist[is.na(PixelSpacing.y), PixelSpacing.y := mean(PixelSpacing.y, na.rm=T)]
+playlist[is.na(SliceLocation),  SliceLocation  := mean(SliceLocation, na.rm=T)]
+playlist[is.na(SliceThickness), SliceThickness := mean(SliceThickness, na.rm=T)]
+
 write.csv(playlist, "imagelist.csv", row.names=F)
 
 getImageList <- function(type = "sax")
@@ -61,8 +68,8 @@ getImageList <- function(type = "sax")
 getSliceList <- function(type = "sax")
 {
   oneSliceGroup <- select(getImageList(type), Id, Dataset, ImgType, Offset, starts_with("Slice")) %>% 
-    arrange(Dataset, Id, ImgType, Slice, SliceLocation) %>% unique()
-  setkey(oneSliceGroup, Dataset, Id, ImgType, Slice, SliceLocation)
+    arrange(Dataset, Id, ImgType, Slice) %>% unique()
+  setkey(oneSliceGroup, Dataset, Id, ImgType, Slice)
   return(oneSliceGroup)
 }
 
