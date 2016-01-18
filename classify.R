@@ -76,19 +76,10 @@ showAllSliceImages <- function(ds) {
 }
 
 
-# Read all segment info from all datasets
-allSegments <- NULL
-for (dataset in datasetFoldersForSegmentDetection) {
-  fname <- getSegmentFile(dataset)
-  if (file.exists(fname)) {
-    segInfo <- fread(fname)
-  }
-  if (is.null(allSegments)) {
-    allSegments <- segInfo
-  } else {
-    allSegments <- rbind(allSegments, segInfo)
-  }
-}
+# Read all segment info from the train set only
+allSegmentationInfo <- fread(getSegmentFile("train"))
+
+# TODO - join with image info here for the meta attributes and file name etc.
 
 # Read previous segment classification
 segPredictSet <- NULL
@@ -104,18 +95,18 @@ if (file.exists(segPredictFile)) {
                           isLV)
 }
 
-# Read playlist, which is a full list of all slices for all cases of all datasets
-# which provides additional (meta) info about the slices
-sliceInfo <- fread("slicelist.csv")
+# Read all slices with meta info
+sliceInfo <- getSliceList() # TODO should this be ImageList?
 
+# TODO: don't
 # Select only the middle slices (usually 2 per Id)
 # TODO consider a wider selection
-allSegments <- left_join(allSegments, select(sliceInfo, -ImgType, -Dataset), c("Id", "Slice")) %>%
+allSegmentationInfo <- left_join(allSegmentationInfo, select(sliceInfo, -ImgType, -Dataset), c("Id", "Slice")) %>%
   group_by(Id) %>% 
   filter(SliceOrder == min(SliceOrder))
 
 # Select slices to prompt for
-promptSlices <- unique(select(allSegments, Id, Slice)) 
+promptSlices <- unique(select(allSegmentationInfo, Id, Slice)) 
 promptSlices$ReDo <- promptSlices$Id %in% redoClassificationIdList
 promptSlices$Random <- runif(nrow(promptSlices))
 if (!is.null(segPredictSet)) {
@@ -127,7 +118,9 @@ if (!is.null(segPredictSet)) {
 
 if (nrow(promptSlices) > 0) {
   for (s in 1:nrow(promptSlices)) {
-    slice <- filter(allSegments, Id == promptSlices$Id[s], Slice == promptSlices$Slice[s])
+    slice <- filter(allSegmentationInfo, 
+                    Id == promptSlices$Id[s], 
+                    Slice == promptSlices$Slice[s])
     if (nrow(slice > 0)) {
       slice$isLV <- NA
       firstImage <- filter(slice, Time == slice$Time[1])
