@@ -243,9 +243,11 @@ if (nrow(promptSlices) > 0) {
         
         #         write.csv(segPredictSet, segPredictFile, row.names=F)
       } else {
-        print(unique(segmentsFirstImage$FileName))
-        print("WARN: Not all image files exist on this system")
+        print("WARN: No new data")
       }
+    } else {
+      print(unique(segmentsFirstImage$FileName))
+      print("WARN: Not all image files exist on this system")
     }
   }
 }
