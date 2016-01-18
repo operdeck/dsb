@@ -69,6 +69,10 @@ getSegmentFile <- function(ds) {
   paste("segments-",ds,".csv",sep="")
 }
 
+getImageFile <- function(ds) {
+  paste("data",unique(ds$FileName),sep="/")
+}
+
 # getImageFolder <- function(entry) {
 #   paste("data",
 #         entry$Dataset,
@@ -100,27 +104,49 @@ plotSlice <- function(slice) {
   }
 }
 
-getImageList <- function(type = "sax")
+getImageList <- function(type = "sax", playlist=NULL)
 {
-  playlist <- fread("imagelist.csv")
+  if (is.null(playlist)) {
+    playlist <- fread("imagelist.csv")
+  }
   r <- filter(playlist, ImgType==type)
   setkey(r, Id, Dataset, ImgType, Slice, FileName)
   return(r)
 }
 
-getSliceList <- function(type = "sax")
+getSliceList <- function(type = "sax", playlist=NULL)
 {
-  oneSliceGroup <- select(getImageList(type), Id, Dataset, ImgType, Offset, starts_with("Slice")) %>% 
+  oneSliceGroup <- select(getImageList(type, playlist), Id, Dataset, ImgType, Offset, starts_with("Slice")) %>% 
     arrange(Dataset, Id, ImgType, Slice) %>% unique()
   setkey(oneSliceGroup, Dataset, Id, ImgType, Slice)
   return(oneSliceGroup)
 }
 
-getIdList <- function(type = "sax")
+getIdList <- function(type = "sax", playlist=NULL)
 {
-  ids <- select(getSliceList(type), Id, Dataset, ImgType, SliceCount) %>% unique()
+  ids <- select(getSliceList(type, playlist), Id, Dataset, ImgType, SliceCount) %>% unique()
   setkey(ids, Id, Dataset, ImgType)
   return(ids)
 }
 
-
+# # Given a list of images with segments for one slice, return a list with every image
+# # and only 0 or 1 segments per image, such that the overal distance to the Left Ventricle
+# # is minimized.
+# TODO - not tested, not finished
+getImagesWithLVSegments <- function(slice)
+{
+  # for ALL segments within the slice
+  for (lvCandidateIndex in seq(nrow(slice))) {
+    # for ALL other segments (at once)
+    # calculate distance to lvCandidate
+    slice$distToLVCandidate <- sqrt((slice$m.cx - slice$m.cx[lvCandidateIndex])^2 + 
+                                      (slice$m.cy - slice$m.cy[lvCandidateIndex])^2)
+    # identify the segment with smallest distance per Image
+    identifiedLVSegments <- group_by(slice, Time) %>% summarise(segLV = segIndex[which.min(distToLVCandidate)])
+    slice <- left_join(slice, identifiedLVSegments, by=c("Time"))
+    slice$isLV <- (slice$segIndex == slice$segLV)
+    
+    # calculate sum of pLV or something for the slices...
+    # keep track of the lowest pLV sum
+  }
+}

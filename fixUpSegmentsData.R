@@ -1,6 +1,9 @@
 # Ad-hoc script to fix up segment data sets when formats
 # change
 
+# TODO drop FileName, -Offset, -SliceCount, -SliceIndex, -SliceOrder, 
+# -PixelSpacing.x, -PixelSpacing.y, -SliceLocation, -SliceThickness
+
 source("util.R")
 
 for (ds in datasetFolders) {
