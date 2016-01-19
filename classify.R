@@ -60,7 +60,6 @@ showSingleImage <- function(segments) {
 # Show all images of this slice
 showAllSliceImages <- function(slice) {
   imgz <- list()
-  cat("Showing images for:",unique(slice$Time),fill=T)
   for (t in unique(slice$Time)) {
     f <- getImageFile(slice[which(slice$Time == t)[1],])
     dicom <- readDICOMFile(f)
@@ -115,139 +114,154 @@ if (!is.null(segPredictSet)) {
     arrange(!ReDo, classifiedAlready, Random) # previously: Id, Slice instead of Random
 }
 
-if (nrow(promptSlices) > 0) {
-  for (s in seq(nrow(promptSlices))) {
-    slice <- filter(allSegmentationInfo, 
-                    Id == promptSlices$Id[s], 
-                    Slice == promptSlices$Slice[s])
-    if (all(file.exists(paste("data",unique(slice$FileName),sep="/")))) {
-      unProcessedImageIndices <- unique(slice$Time)
-      while (length(unProcessedImageIndices) > 0) {
-        cat("Unprocessed Image Time:",unProcessedImageIndices,fill=T)
-        
-        slice[Time %in% unProcessedImageIndices, isLV := NA]
-        
-        timeFirstUnProcessedImage <- unProcessedImageIndices[1]
-        segmentsFirstImage <- filter(slice, Time == timeFirstUnProcessedImage)
-        showSingleImage(segmentsFirstImage)
-        
-        cat("Id=",promptSlices$Id[s],"Slice=",promptSlices$Slice[s],
-            "#Images=",length(unique(slice$Time)),
-            "#Segment=",nrow(slice),fill=T)
-        
-        indexOfLVSegment <- readInteger(paste("Identify segment of left ventricle in image",
-                                              timeFirstUnProcessedImage,
-                                              "(0=none, -1=can't see): "))
-        if (indexOfLVSegment == -1) {
-          # Don't know about the first one. Keep at NA and see about the others.
-          unProcessedImageIndices <- unProcessedImageIndices[2:length(unProcessedImageIndices)]
-        } else {
-          if (indexOfLVSegment == 0) {
-            # Set only the LV segment of this first image, process the rest in a similar way.
-            slice[Time == timeFirstUnProcessedImage, isLV := FALSE]
-            unProcessedImageIndices <- unProcessedImageIndices[2:length(unProcessedImageIndices)]
-          } else {
-            # Set segments of other images based to distance to segment in identified image
-            # filter out any images with all segments that are too distant from the identified LV in the manually classified image
-            segmentLV <- segmentsFirstImage[segmentsFirstImage$segIndex == indexOfLVSegment,]
-            
-            pixelAreaScale <- segmentLV$PixelSpacing.x * segmentLV$PixelSpacing.y
-            pixelLengthScale <- sqrt(pixelAreaScale)
-            
-            distThreshold <- 3.75 / pixelLengthScale # 5 for 'normal' images
-            slice$distToLVSeg <- sqrt((slice$m.cx - segmentLV$m.cx)^2 + (slice$m.cy - segmentLV$m.cy)^2)
-            slice <- left_join(slice, group_by(slice, Time) %>% 
-                                 summarise(segLV = segIndex[which.min(distToLVSeg)]), by=c("Time"))
-            # Tentatively set the LV's for all the images. Confirm after display.
-            slice[Time %in% unProcessedImageIndices & (distToLVSeg < distThreshold), isLV := (segIndex == segLV)]
-            cat("From the",length(unique(slice$Time)),"images,",
-                sum(filter(slice, Time %in% unProcessedImageIndices)$isLV, na.rm=T),"within threshold.",fill=T)
-            # graph of area vs image
-            plotSlice(filter(slice, isLV) %>% rename(radius.mean = s.radius.mean,
-                                                     radius.max = s.radius.max,
-                                                     radius.min = s.radius.min))
-            showAllSliceImages(slice[Time %in% unique(slice$Time[which(!is.na(slice$isLV))]),])
-            
-            identifiedCorrectly <- readline("Are all segments identified correctly (y/n): ")
-            if (identifiedCorrectly != "y") {
-              # Set only segments of the first image
-              slice[Time == slice$Time[1], isLV := (segIndex == indexOfLVSegment)]
-              slice[Time == timeFirstUnProcessedImage, isLV := TRUE]
-              
-              unProcessedImageIndices <- unProcessedImageIndices[2:length(unProcessedImageIndices)]
-            } else {
-              unProcessedImageIndices <- setdiff(unProcessedImageIndices, unique(slice$Time[which(!is.na(slice$isLV))]))
-              cat("New times:",unProcessedImageIndices,fill=T)
-            }
-          }
-        }
-        View(slice)
-      }
-      
-      # save data
-      newData <- filter(slice, !is.na(isLV)) %>% select( 
-        Id, Slice, Time,   # uniquely identifies image via join to playlist
-        UUID,              # unique segment identifier
-        starts_with("m."), # standard moments & shape attributes 
-        starts_with("s."),
-        isLV)
-      
-      if(nrow(newData) > 0) {
-        if (is.null(segPredictSet)) {
-          segPredictSet <- newData
-        } else {
-          # TODO check both are compatible
-          removedSet <- setdiff(names(segPredictSet), names(newData))
-          addedSet <- setdiff(names(newData), names(segPredictSet))
-          diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
-          if (length(removedSet) + length(addedSet) > 0) {
-            print("Existing:")
-            print(names(segPredictSet))
-            print("New:")
-            print(names(newData))
-            print(paste(diffSet, collapse=","))
-            stop("Datasets do not match up. Please consider removing or fixing segment classification.")
-          }
-          nDrop <- nrow(filter(segPredictSet, 
-                               Slice %in% newData$Slice,
-                               Id %in% newData$Id))
-          if (nDrop > 0) {
-            cat("...dropping",nDrop,"rows from previous results",fill=T)
-          }
-          segPredictSet <- rbind(filter(segPredictSet, 
-                                        !(Slice %in% newData$Slice & 
-                                            Id %in% newData$Id)), 
-                                 newData)
-        }
-        
-        print("Progress:")
-        segmentedByID <- left_join(getIdList(playlist=allImages), 
-                                   unique(select(segPredictSet, Id, isLV)), by=c("Id")) %>% 
-          group_by(Dataset, Id) %>% summarise(hasSegs = any(isLV))
-        segmentedBySlice <- left_join(getSliceList(playlist=allImages), 
-                                      unique(select(segPredictSet, Id, Slice, isLV)), by=c("Id", "Slice")) %>% 
-          group_by(Dataset, Id) %>% summarise(hasSegs = any(isLV))
-        segmentedByImage <- left_join(getImageList(playlist=allImages), 
-                                      unique(select(segPredictSet, Id, Slice, Time, isLV)), by=c("Id", "Slice", "Time")) %>% 
-          group_by(Dataset, Id) %>% summarise(hasSegs = any(isLV))
-        
-        classificationProgress <- data.frame(segmented = c(sum(segmentedByID$isLV,na.rm=T),
-                                                           sum(segmentedBySlice$isLV,na.rm=T),
-                                                           sum(segmentedByImage$isLV,na.rm=T)),
-                                             total = c(nrow(segmentedByID),
-                                                       nrow(segmentedBySlice),
-                                                       nrow(segmentedByImage)))
-        classificationProgress <- mutate(classificationProgress,
-                                         percentage = paste(round(100*segmented/total,2),"%",sep=""))
-        print(classificationProgress)
-        
-        #         write.csv(segPredictSet, segPredictFile, row.names=F)
-      } else {
-        print("WARN: No new data")
-      }
+if (nrow(promptSlices) < 1) {
+  stop("Nothing to do, no slices to prompt for.")
+}
+
+for (sliceIndex in seq(nrow(promptSlices))) {
+  # all segments of all images of one slice
+  slice <- filter(allSegmentationInfo, 
+                  Id == promptSlices$Id[sliceIndex], 
+                  Slice == promptSlices$Slice[sliceIndex])
+  if (!all(file.exists(getImageFile(slice)))) {
+    next
+  }
+  
+  # list of images in this slice that need processing
+  unProcessedImageIndices <- unique(slice$Time)
+  while (length(unProcessedImageIndices) > 0) {
+    cat("Id=",promptSlices$Id[sliceIndex],"Slice=",promptSlices$Slice[sliceIndex],
+        "#Images:",length(unique(slice$Time)),
+        "#Segments:",nrow(slice),fill=T)
+    cat(length(unProcessedImageIndices),"images:",unProcessedImageIndices,fill=T)
+    firstImageIndex <- unProcessedImageIndices[1] # all segments of first image
+    if (length(unProcessedImageIndices) > 1) { # all segments of rest of images
+      restOfUnprocessedImageIndices <- unProcessedImageIndices[2:length(unProcessedImageIndices)]
     } else {
-      print(unique(segmentsFirstImage$FileName))
-      print("WARN: Not all image files exist on this system")
+      restOfUnprocessedImageIndices <- c()
     }
+    
+    # show firstImage
+    segmentsFirstImage <- filter(slice, Time == firstImageIndex)
+    showSingleImage(segmentsFirstImage) 
+    indexOfLVSegment <- readInteger(paste("Identify segment of left ventricle in image",
+                                          firstImageIndex,
+                                          "(0=none, -1=can't see): "))
+    
+    if (indexOfLVSegment < 1) {
+      # set isLV for all segments of first image only
+      if (indexOfLVSegment == 0) {
+        slice[Time == firstImageIndex, isLV := FALSE] # no LV segment
+      } else {
+        slice[Time == firstImageIndex, isLV := NA]    # don't know / can't see
+      }
+      unProcessedImageIndices <- restOfUnprocessedImageIndices
+    } else {
+      # set isLV for all segments of first image (T/F)
+      slice[Time == firstImageIndex, isLV := (segIndex == indexOfLVSegment)]
+      
+      # tentatively set isLV for all segments of the rest of the images (T/F/NA)
+      segmentLV <- segmentsFirstImage[segmentsFirstImage$segIndex == indexOfLVSegment,]
+      pixelAreaScale <- segmentLV$PixelSpacing.x * segmentLV$PixelSpacing.y
+      pixelLengthScale <- sqrt(pixelAreaScale)
+      distThreshold <- 2 # 3.75 / pixelLengthScale # 5 for 'normal' images
+      
+      slice[Time %in% restOfUnprocessedImageIndices, isLV := NA]
+      slice[Time %in% restOfUnprocessedImageIndices, distToLVSeg := sqrt((m.cx - segmentLV$m.cx)^2 + (m.cy - segmentLV$m.cy)^2)]
+      slice[Time %in% restOfUnprocessedImageIndices, segLV := segIndex[which.min(distToLVSeg)], by=Time]
+      slice[Time %in% restOfUnprocessedImageIndices, isLV := (segIndex == segLV) & (distToLVSeg < distThreshold)]
+      slice[Time %in% restOfUnprocessedImageIndices, anyLV := any(isLV, na.rm=T), by=Time]
+      
+      segmentsWithTentativeLV <- filter(slice, Time %in% restOfUnprocessedImageIndices, anyLV)
+      imagesIndicesWithTentativeLV <- unique(segmentsWithTentativeLV$Time)
+      cat(length(imagesIndicesWithTentativeLV),"images with tentative Left Ventricle assignment:",imagesIndicesWithTentativeLV,fill=T)
+      
+      # Show the (tentative) results for review and prompt
+      if (length(imagesIndicesWithTentativeLV) > 0) {
+        plotSlice(rename(filter(segmentsWithTentativeLV, isLV), 
+                         radius.mean = s.radius.mean,
+                         radius.max = s.radius.max,
+                         radius.min = s.radius.min))
+        showAllSliceImages(segmentsWithTentativeLV)
+        identifiedCorrectly <- readline("Are all segments identified correctly (y/n): ")
+        if (identifiedCorrectly == "y") {
+          # keep isLV for the rest of the images for which isLV has been set
+          unProcessedImageIndices <- setdiff(restOfUnprocessedImageIndices, imagesIndicesWithTentativeLV)
+        } else {
+          # ignore the tentative classification for the rest of the images
+          unProcessedImageIndices <- restOfUnprocessedImageIndices
+        }
+      } else {
+        # ignore the tentative classification for the rest of the images
+        unProcessedImageIndices <- restOfUnprocessedImageIndices
+      }      
+    }
+    View(slice)
+    print("Left Ventricle segment summary:")
+    print(table(slice$isLV, useNA="always"))
+  }
+  # save data
+  newData <- select(slice,
+                    Id, Slice, Time,   # uniquely identifies image via join to playlist
+                    UUID,              # unique segment identifier
+                    starts_with("m."), # standard moments & shape attributes 
+                    starts_with("s."),
+                    isLV)
+  
+  if(nrow(newData) > 0) {
+    if (is.null(segPredictSet)) {
+      segPredictSet <- newData
+    } else {
+      # Check both are compatible before saving
+      removedSet <- setdiff(names(segPredictSet), names(newData))
+      addedSet <- setdiff(names(newData), names(segPredictSet))
+      diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
+      if (length(removedSet) + length(addedSet) > 0) {
+        print("Existing:")
+        print(names(segPredictSet))
+        print("New:")
+        print(names(newData))
+        print(paste(diffSet, collapse=","))
+        stop("Datasets do not match up. Please consider removing or fixing segment classification.")
+      }
+      nDrop <- nrow(filter(segPredictSet, 
+                           Slice %in% newData$Slice,
+                           Id %in% newData$Id))
+      if (nDrop > 0) {
+        cat("...dropping",nDrop,"rows from previous results",fill=T)
+      }
+      segPredictSet <- rbind(filter(segPredictSet, 
+                                    !(Slice %in% newData$Slice & 
+                                        Id %in% newData$Id)), 
+                             newData)
+    }
+    
+    print("Progress:")
+    segmentedByID <- left_join(getIdList(playlist=allImages), 
+                               unique(select(segPredictSet, Id, isLV)), by=c("Id")) %>% 
+      group_by(Dataset, Id) %>% summarise(hasSegs = any(isLV))
+    segmentedBySlice <- left_join(getSliceList(playlist=allImages), 
+                                  unique(select(segPredictSet, Id, Slice, isLV)), by=c("Id", "Slice")) %>% 
+      group_by(Dataset, Id, Slice) %>% summarise(hasSegs = any(isLV))
+    segmentedByImage <- left_join(getImageList(playlist=allImages), 
+                                  unique(select(segPredictSet, Id, Slice, Time, isLV)), by=c("Id", "Slice", "Time")) %>% 
+      group_by(Dataset, Id, Slice, Time) %>% summarise(hasSegs = any(isLV))
+    
+    classificationProgress <- data.frame(segmented = c(sum(segmentedByID$hasSegs,na.rm=T),
+                                                       sum(segmentedBySlice$hasSegs,na.rm=T),
+                                                       sum(segmentedByImage$hasSegs,na.rm=T)),
+                                         total = c(nrow(segmentedByID),
+                                                   nrow(segmentedBySlice),
+                                                   nrow(segmentedByImage)))
+    classificationProgress <- mutate(classificationProgress,
+                                     percentage = paste(round(100*segmented/total,2),"%",sep=""))
+    rownames(classificationProgress) <- c('By ID','By Slice','By Image')
+    print(classificationProgress)
+    
+    write.csv(segPredictSet, segPredictFile, row.names=F)
   }
 }
+
+print("Done!")
+  
+  
