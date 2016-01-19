@@ -208,7 +208,7 @@ for (nextSlice in seq(nrow(sliceList))) {
     }
     
     # Add segmentation to results and write file (once in a while)
-    if ((nextSlice %% 10 == 0) | T | 
+    if ((nextSlice %% 10 == 0) | 
           (nextSlice == nrow(sliceList)) | 
           ((nextSlice < nrow(sliceList)) & (sliceList$Dataset[nextSlice+1] != sliceList$Dataset[nextSlice]))) {
       ds <- sliceList$Dataset[nextSlice]
