@@ -60,6 +60,7 @@ showSingleImage <- function(segments) {
 # Show all images of this slice
 showAllSliceImages <- function(slice) {
   imgz <- list()
+  #print(select(slice, Time, segIndex, starts_with("m."), starts_with("s.")))
   for (t in unique(slice$Time)) {
     f <- getImageFile(slice[which(slice$Time == t)[1],])
     dicom <- readDICOMFile(f)
@@ -68,23 +69,61 @@ showAllSliceImages <- function(slice) {
       img <- rotate(img,-90)
     }
     seg <- which(slice$Time == t & slice$isLV)
-    imgz[[f]] <- drawCircle(toRGB(img), 
-                            x=slice$m.cx[seg], y=slice$m.cy[seg], radius=slice$s.radius.mean[seg], col="red")
+    #print(slice[seg,])
+    
+    radii <- c(slice$s.radius.mean[seg], slice$s.radius.min[seg], slice$s.radius.max[seg])
+    for (k in seq(length(radii))) {
+      if (radii[k] >= 1) {
+        img <- drawCircle(toRGB(img), 
+                          x=slice$m.cx[seg], y=slice$m.cy[seg], radii[k], col=ifelse(k==1,"red","orange"))
+      }
+    }
+    imgz[[f]] <- img
   }
   EBImage::display(EBImage::combine(imgz),all=T,method="raster")
   text(500,40,paste("ID",unique(slice$Id),"Slice",unique(slice$Slice)),col="yellow",pos=4)
+}
+
+# Build (simple) segment prediction model and apply to test set
+createSegmentModelAndApply <- function(train, test)
+{
+  preds <- rep(1.0/nrow(test), nrow(test))
+  if(is.null(train) || nrow(train) < 10000) {
+    return (preds)
+  }
+
+  segments <- test$segIndex
+  
+  train <- left_join(filter(train, !is.na(isLV)), imageList, by=c("Id", "Slice", "Time"))
+  test <- test[, names(test) %in% setdiff(names(train), "isLV"), with=F]
+
+  train <- createSegmentPredictSet(train)
+  test <- createSegmentPredictSet(test)
+  
+  leftVentricleSegmentModel <- xgboost(data = data.matrix(select(train, -isLV)),
+                                       label = train$isLV, 
+                                       max.depth = 4, eta = 0.1, nround = 100,
+                                       objective = "binary:logistic", verbose=0)
+
+  imp_matrix <- xgb.importance(feature_names = names(select(train, -isLV)), model = leftVentricleSegmentModel)
+  print(xgb.plot.importance(importance_matrix = imp_matrix))
+  
+  probLV <- predict(leftVentricleSegmentModel, data.matrix(test)) #, missing=NaN)
+  names(probLV) <- segments
+  
+  return (probLV)
 }
 
 
 # Read all segment info from the train set only
 # NOTE currently some slice meta info seems to be part of the segmentation data, but
 # this shouldnt be the case. Regardless, drop it and join in from the official meta data.
-allImages <- getImageList()
-allSegmentationInfo <- 
+imageList <- getImageList()
+allSegments <- 
   left_join(select(fread(getSegmentFile("train")), 
                    -FileName, -Offset, -SliceCount, -SliceIndex, -SliceOrder, 
                    -PixelSpacing.x, -PixelSpacing.y, -SliceLocation, -SliceThickness), 
-            allImages,
+            imageList,
             by=c("Dataset","Id","ImgType","Slice","Time"))
 
 # Read previous segment classification
@@ -104,7 +143,7 @@ if (file.exists(segPredictFile)) {
 }
 
 # Select slices to prompt for
-promptSlices <- unique(select(allSegmentationInfo, Id, Slice)) 
+promptSlices <- unique(select(allSegments, Id, Slice)) 
 promptSlices$ReDo <- promptSlices$Id %in% redoClassificationIdList
 promptSlices$Random <- runif(nrow(promptSlices))
 if (!is.null(segPredictSet)) {
@@ -120,12 +159,14 @@ if (nrow(promptSlices) < 1) {
 
 for (sliceIndex in seq(nrow(promptSlices))) {
   # all segments of all images of one slice
-  slice <- filter(allSegmentationInfo, 
+  slice <- filter(allSegments, 
                   Id == promptSlices$Id[sliceIndex], 
                   Slice == promptSlices$Slice[sliceIndex])
   if (!all(file.exists(getImageFile(slice)))) {
     next
   }
+  # Create simple segment model and predict pLV on whole slice here
+  slice$pLV <- createSegmentModelAndApply(segPredictSet, slice)
   
   # list of images in this slice that need processing
   unProcessedImageIndices <- unique(slice$Time)
@@ -143,12 +184,19 @@ for (sliceIndex in seq(nrow(promptSlices))) {
     
     # show firstImage
     segmentsFirstImage <- filter(slice, Time == firstImageIndex)
+    segmentProbs <- round(segmentsFirstImage$pLV, 3)
+    names(segmentProbs) <- segmentsFirstImage$segIndex
+    print("Segments with prediction of being the Left Ventricle:")
+    print(head(sort(segmentProbs, decreasing=T), 5))
     showSingleImage(segmentsFirstImage) 
-    indexOfLVSegment <- readInteger(paste("Identify segment of left ventricle in image",
+    indexOfLVSegment <- readInteger(paste("Identify Left Ventricle in image",
                                           firstImageIndex,
-                                          "(0=none, -1=can't see): "))
+                                          "(0=none, -1=skip image, -2=skip slice): "))
     
     if (indexOfLVSegment < 1) {
+      if (indexOfLVSegment == -2) {
+        break 
+      }
       # set isLV for all segments of first image only
       if (indexOfLVSegment == 0) {
         slice[Time == firstImageIndex, isLV := FALSE] # no LV segment
@@ -164,7 +212,7 @@ for (sliceIndex in seq(nrow(promptSlices))) {
       segmentLV <- segmentsFirstImage[segmentsFirstImage$segIndex == indexOfLVSegment,]
       pixelAreaScale <- segmentLV$PixelSpacing.x * segmentLV$PixelSpacing.y
       pixelLengthScale <- sqrt(pixelAreaScale)
-      distThreshold <- 2 # 3.75 / pixelLengthScale # 5 for 'normal' images
+      distThreshold <- 3.75 / pixelLengthScale # 5 for 'normal' images
       
       slice[Time %in% restOfUnprocessedImageIndices, isLV := NA]
       slice[Time %in% restOfUnprocessedImageIndices, distToLVSeg := sqrt((m.cx - segmentLV$m.cx)^2 + (m.cy - segmentLV$m.cy)^2)]
@@ -176,12 +224,17 @@ for (sliceIndex in seq(nrow(promptSlices))) {
       imagesIndicesWithTentativeLV <- unique(segmentsWithTentativeLV$Time)
       cat(length(imagesIndicesWithTentativeLV),"images with tentative Left Ventricle assignment:",imagesIndicesWithTentativeLV,fill=T)
       
-      # Show the (tentative) results for review and prompt
+      # Show the (tentative) results with segment probabilities for review and prompt
       if (length(imagesIndicesWithTentativeLV) > 0) {
         plotSlice(rename(filter(segmentsWithTentativeLV, isLV), 
                          radius.mean = s.radius.mean,
                          radius.max = s.radius.max,
                          radius.min = s.radius.min))
+        print("Prediction of being the Left Ventricle in plot:")
+        segmentProbs <- round(filter(segmentsWithTentativeLV, isLV)$pLV, 3)
+        ncol <- ceiling(sqrt(length(segmentProbs)))
+        nrow <- ceiling(length(segmentProbs)/ncol)
+        print(matrix(segmentProbs[1:(ncol*nrow)], ncol=ncol, nrow=nrow, byrow=T))
         showAllSliceImages(segmentsWithTentativeLV)
         identifiedCorrectly <- readline("Are all segments identified correctly (y/n): ")
         if (identifiedCorrectly == "y") {
@@ -199,6 +252,11 @@ for (sliceIndex in seq(nrow(promptSlices))) {
     View(slice)
     print("Left Ventricle segment summary:")
     print(table(slice$isLV, useNA="always"))
+  }
+  
+  if (indexOfLVSegment == -2) {
+    print("User triggered skip of this slice")
+    next
   }
   # save data
   newData <- select(slice,
@@ -237,13 +295,13 @@ for (sliceIndex in seq(nrow(promptSlices))) {
     }
     
     print("Progress:")
-    segmentedByID <- left_join(getIdList(playlist=allImages), 
+    segmentedByID <- left_join(getIdList(playlist=imageList), 
                                unique(select(segPredictSet, Id, isLV)), by=c("Id")) %>% 
       group_by(Dataset, Id) %>% summarise(hasSegs = any(isLV))
-    segmentedBySlice <- left_join(getSliceList(playlist=allImages), 
+    segmentedBySlice <- left_join(getSliceList(playlist=imageList), 
                                   unique(select(segPredictSet, Id, Slice, isLV)), by=c("Id", "Slice")) %>% 
       group_by(Dataset, Id, Slice) %>% summarise(hasSegs = any(isLV))
-    segmentedByImage <- left_join(getImageList(playlist=allImages), 
+    segmentedByImage <- left_join(getImageList(playlist=imageList), 
                                   unique(select(segPredictSet, Id, Slice, Time, isLV)), by=c("Id", "Slice", "Time")) %>% 
       group_by(Dataset, Id, Slice, Time) %>% summarise(hasSegs = any(isLV))
     
@@ -263,5 +321,4 @@ for (sliceIndex in seq(nrow(promptSlices))) {
 }
 
 print("Done!")
-  
-  
+

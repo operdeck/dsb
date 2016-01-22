@@ -18,54 +18,37 @@ pSegmentThreshold <- 0.5
 # Confidence level for predictions
 confidence <- 0.95
 
+validationPercentage <- 0.20
 
 # Identify the LV segments in the whole dataset by creating a model
 # from the (manually) identified ones
 classifiedSegments <- fread('segments-predict.csv') 
 
-# Read full image segmentation
+print("Reading image meta data")
+imageList <- getImageList()
+
+print("Reading segmentation")
 allSegments <- NULL
-for (dataset in datasetFolders) {
-  fname <- getSegmentFile(dataset)
-  if (file.exists(fname)) {
-    segInfo <- fread(fname)
-  }
-  if (is.null(allSegments)) {
-    allSegments <- segInfo
-  } else {
-    allSegments <- rbind(allSegments, segInfo)
+for (dataset in unique(imageList$Dataset)) {
+  if (file.exists(getSegmentFile(dataset))) {
+    segmentsPerDataset <- fread(getSegmentFile(dataset))
+    if (is.null(allSegments)) {
+      allSegments <- segmentsPerDataset
+    } else {
+      removedSet <- setdiff(names(allSegments), names(segmentsPerDataset))
+      addedSet <- setdiff(names(segmentsPerDataset), names(allSegments))
+      diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
+      if (length(removedSet) + length(addedSet) > 0) {
+        print(names(allSegments))
+        print(names(segmentsPerDataset))
+        print(diffSet)
+        stop("Datasets do not match up. Please consider removing files.")
+      }
+      allSegments <- rbind(allSegments, segmentsPerDataset)
+    }
   }
 }
 setkey(allSegments, Id, Slice, Time, UUID)
-
-# NOTE: UUID is not really unique
-
-# First cut at 2-D normalization of the image data
-allSegments <- mutate(allSegments,
-                      areaMultiplier = pixelSpacing.x * pixelSpacing.y,
-                      lengthMultiplier = sqrt(areaMultiplier),
-                      
-                      area = s.area*areaMultiplier,
-                      area.ellipse = pi*s.radius.min*s.radius.max*areaMultiplier,
-                      
-                      perimeter = s.perimeter*lengthMultiplier,
-                      radius.mean = s.radius.mean*lengthMultiplier,
-                      radius.min = s.radius.min*lengthMultiplier,
-                      radius.max = s.radius.max*lengthMultiplier,
-                      radius.var = sqrt(s.radius.sd)*lengthMultiplier,
-                      
-                      majoraxis = m.majoraxis*lengthMultiplier,
-                      roundness = 4*pi*area/(perimeter^2)) %>%
-  rename(
-    # "m.eccentricity" and "m.theta" are scale independent
-    eccentricity = m.eccentricity,
-    theta = m.theta) %>%
-  select(-pixelSpacing.x,
-         -pixelSpacing.y,
-         -areaMultiplier,
-         -lengthMultiplier,
-         -m.majoraxis,
-         -starts_with("s."))
 
 # First, match the ones with the same UUID
 segClassificationSet <- left_join(select(classifiedSegments, Id, Slice, Time, UUID, isLV), 
@@ -75,6 +58,9 @@ segClassificationSet <- left_join(select(classifiedSegments, Id, Slice, Time, UU
 # For the others, find the best segment match per each Id/Slice/Time
 # TODO: not sure what happens if none of the UUID's match
 if (nrow(filter(segClassificationSet, is.na(Dataset))) > 0) {
+  
+  stop("Refactor code to match new segmentation to old classification!!")
+  
   classifiedSegmentsOlder <- left_join(select(filter(segClassificationSet, is.na(Dataset)), Id, Slice, Time, UUID, isLV),
                                        select(classifiedSegments, Id, Slice, Time, UUID, isLV, m.cx, m.cy))
   segClassificationSet <- filter(segClassificationSet, !is.na(Dataset))
@@ -111,7 +97,15 @@ if (nrow(filter(segClassificationSet, is.na(Dataset))) > 0) {
   }
 }
 
-segClassificationSet <- filter(segClassificationSet, !is.na(isLV)) # just to be sure
+# Quick report on the segmentation prediction data set.
+cat("Segment predict set has",nrow(segClassificationSet),"observations with a pos rate of",sum(segClassificationSet$isLV)/nrow(segClassificationSet))
+cat("   number of Ids   :",nrow(unique(select(segClassificationSet,Id))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id))),fill=T)
+cat("   number of Slices:",nrow(unique(select(segClassificationSet,Id,Slice))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id,Slice))),fill=T)
+cat("   number of Images:",nrow(unique(select(segClassificationSet,Id,Slice,Time))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id,Slice,Time))),fill=T)
+
+# Build up prediction set by creating derived variables and dropping non-predictors
+segClassificationSetIDs <- select(segClassificationSet, Id, Dataset, Slice, Time)
+segClassificationSet <- createSegmentPredictSet(filter(segClassificationSet, !is.na(isLV)))
 
 # quick plots to verify results
 
@@ -125,35 +119,29 @@ segClassificationSet <- filter(segClassificationSet, !is.na(isLV)) # just to be 
 # See for example:
 #  http://stats.stackexchange.com/questions/63233/fourier-trigonometric-interpolation
 
-l <- unique(select(segClassificationSet, Id, Slice))
-for (i in seq(nrow(l))) {
-  slice <- filter(segClassificationSet, Id==l$Id[i], Slice==l$Slice[i])
-  
-  plotSlice(filter(slice, isLV))
-}
+# l <- head(unique(select(segClassificationSet, Id, Slice)),5)
+# for (i in seq(nrow(l))) {
+#   slice <- filter(segClassificationSet, Id==l$Id[i], Slice==l$Slice[i])
+#   
+#   plotSlice(filter(slice, isLV))
+# }
 
 # Build up the data set for training and classification
 
-# TODO maybe join in some slice info to get nr of images per slice etc and
-# create some predictors out of that. For now, just dropping all meta info.
-
-segClassificationSet <- select(segClassificationSet, 
-                               -m.cx, -m.cy, -distToROI,
-                               -Id, -Slice, -Time, -Dataset, -ImgType, -Offset, -segIndex)
 # We keep the meta-attributes as these are useful for the further roll-up
-allSegments <- select(allSegments, 
-                      -m.cx, -m.cy, -distToROI)
+# allSegments <- select(allSegments, 
+#                       -m.cx, -m.cy, -distToROI)
 
-trainData <- segClassificationSet
-valSet <- sample.int(nrow(trainData), 0.20*nrow(trainData))
-trainDataPredictorsOnly <- select(trainData, -UUID, -isLV)
+valSet <- sample.int(nrow(segClassificationSet), validationPercentage*nrow(segClassificationSet))
+trainDataPredictorsOnly <- select(segClassificationSet, -isLV, -isProcessed, -distToROI) # NB: isProcessed/distToROI shouldnt be here anymore...
 
 cat("Building segment model with",length(names(trainDataPredictorsOnly)),"predictors",fill=T)
+
 uniVariateAnalysis <- data.frame(Predictor=names(trainDataPredictorsOnly),
-                                 validation=sapply(seq(length(trainDataPredictorsOnly)), 
-                                                   function(i) {auc(trainData$isLV[valSet], trainDataPredictorsOnly[[i]][valSet])}),
-                                 train=sapply(seq(length(trainDataPredictorsOnly)), 
-                                              function(i) {auc(trainData$isLV[-valSet], trainDataPredictorsOnly[[i]][-valSet])}))
+                                 validation=sapply(trainDataPredictorsOnly, 
+                                                   function(p) {auc(segClassificationSet$isLV[valSet], p[valSet])}),
+                                 train=sapply(trainDataPredictorsOnly, 
+                                              function(p) {auc(segClassificationSet$isLV[-valSet], p[-valSet])}))
 uniVariateAnalysis <- gather(uniVariateAnalysis, dataset, auc, -Predictor)
 print(ggplot(uniVariateAnalysis, aes(x=Predictor, y=auc, fill=dataset))+
         geom_bar(stat="identity",position="dodge")+
@@ -161,23 +149,23 @@ print(ggplot(uniVariateAnalysis, aes(x=Predictor, y=auc, fill=dataset))+
         geom_hline(yintercept=0.52,linetype="dashed")+
         ggtitle("AUC of individual predictors for segmentation model"))
 
-leftVentricleSegmentModel <- xgboost(data = as.matrix(trainDataPredictorsOnly[-valSet]), 
-                                     label = trainData$isLV[-valSet], 
+leftVentricleSegmentModel <- xgboost(data = data.matrix(trainDataPredictorsOnly[-valSet]), 
+                                     label = segClassificationSet$isLV[-valSet], 
                                      max.depth = 2, eta = 0.1, nround = 100,
                                      objective = "binary:logistic", missing=NaN, verbose=0)
 imp_matrix <- xgb.importance(feature_names = names(trainDataPredictorsOnly), model = leftVentricleSegmentModel)
 print(xgb.plot.importance(importance_matrix = imp_matrix))
 
 # Get an idea of the accuracy. Note, it seems very high always.
-probLV <- predict(leftVentricleSegmentModel, as.matrix(trainDataPredictorsOnly))
-cat("AUC for validation set:", auc(trainData$isLV[valSet], probLV[valSet]), fill=T)
+probLV <- predict(leftVentricleSegmentModel, data.matrix(trainDataPredictorsOnly))
+cat("AUC for validation set:", auc(segClassificationSet$isLV[valSet], probLV[valSet]), fill=T)
 
 # Distribution of probabilities
-plotSet <- group_by(data.frame(predictedProbability = cut2(probLV, g=20), # equi-weight
-                               isLV = trainData$isLV,
-                               isVal = (seq(nrow(trainData)) %in% valSet)), predictedProbability) %>% 
+plotSet <- group_by(data.frame(predictedProbability = cut(probLV, 10), #cut2(probLV, g=20), # equi-weight
+                               isLV = segClassificationSet$isLV,
+                               isVal = (seq(nrow(segClassificationSet)) %in% valSet)), predictedProbability) %>% 
   summarise(validation = sum(isLV & isVal)/sum(isVal),
-            train = sum(isLV & !isVal)/(n()-sum(isVal)),
+            train = sum(isLV & !isVal)/sum(!isVal),
             count = n()) %>%
   gather(dataset, probability, -count, -predictedProbability)
 print(ggplot(plotSet, aes(x=predictedProbability, y=probability, fill=dataset)) + 

@@ -150,3 +150,47 @@ getImagesWithLVSegments <- function(slice)
     # keep track of the lowest pLV sum
   }
 }
+
+# Create segment prediction dataset
+createSegmentPredictSet <- function(ds)
+{
+  ds <- mutate(ds,
+               areaMultiplier = PixelSpacing.x * PixelSpacing.y,
+               lengthMultiplier = sqrt(areaMultiplier),
+               
+               area = s.area*areaMultiplier,
+               area.ellipse = pi*s.radius.min*s.radius.max*areaMultiplier,
+               
+               perimeter = s.perimeter*lengthMultiplier,
+               radius.mean = s.radius.mean*lengthMultiplier,
+               radius.min = s.radius.min*lengthMultiplier,
+               radius.max = s.radius.max*lengthMultiplier,
+               radius.var = sqrt(s.radius.sd)*lengthMultiplier,
+               
+               majoraxis = m.majoraxis*lengthMultiplier,
+               roundness = 4*pi*area/(perimeter^2),
+               
+               slicePct = SliceIndex/SliceCount) %>%
+    rename(
+      # "m.eccentricity" and "m.theta" are scale independent
+      eccentricity = m.eccentricity,
+      theta = m.theta) %>%
+    select(-FileName,               # is an ID
+           -PixelSpacing.x,         # used to build another predictor
+           -PixelSpacing.y,         # used to build another predictor
+           -areaMultiplier,         # is temporary variable
+           -lengthMultiplier,       # is temporary variable
+           -m.majoraxis,            # is orientation dependent
+           -starts_with("s."),      # renamed and scaled
+           -m.cx, -m.cy,            # is position dependent
+           -UUID,                   # is an ID
+           -Id, -Slice, -Time,      # is (part of) ID 
+           -Dataset, -ImgType,      # is (part of) ID
+           -SliceIndex, -SliceCount,# used to build another predictor
+           #-distToROI,              # position dependent - not available always
+           -Offset)                 # slice location is the better predictor
+  
+  # TODO: add difficult aggregates over other images for the same slice
+  
+  return (ds[,sort(names(ds)),with=F])
+}

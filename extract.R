@@ -127,23 +127,23 @@ print("Reading image meta data")
 imageList <- getImageList()
 
 print("Reading previous segmentation")
-allSegmentationInfo <- NULL
+allSegments <- NULL
 for (dataset in unique(imageList$Dataset)) {
   if (file.exists(getSegmentFile(dataset))) {
     segmentsPerDataset <- fread(getSegmentFile(dataset))
-    if (is.null(allSegmentationInfo)) {
-      allSegmentationInfo <- segmentsPerDataset
+    if (is.null(allSegments)) {
+      allSegments <- segmentsPerDataset
     } else {
-      removedSet <- setdiff(names(allSegmentationInfo), names(segmentsPerDataset))
-      addedSet <- setdiff(names(segmentsPerDataset), names(allSegmentationInfo))
+      removedSet <- setdiff(names(allSegments), names(segmentsPerDataset))
+      addedSet <- setdiff(names(segmentsPerDataset), names(allSegments))
       diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
       if (length(removedSet) + length(addedSet) > 0) {
-        print(names(allSegmentationInfo))
+        print(names(allSegments))
         print(names(segmentsPerDataset))
         print(diffSet)
         stop("Datasets do not match up. Please consider removing files.")
       }
-      allSegmentationInfo <- rbind(allSegmentationInfo, segmentsPerDataset)
+      allSegments <- rbind(allSegments, segmentsPerDataset)
     }
   }
 }
@@ -152,9 +152,9 @@ for (dataset in unique(imageList$Dataset)) {
 print("Starting to process images")
 # Here we order the imageList:
 # - first incomplete ID's, then unprocessed slices by their special 'mid order'
-if (!is.null(allSegmentationInfo)) {
+if (!is.null(allSegments)) {
   imageList <- left_join(imageList, 
-                         mutate(unique(select(allSegmentationInfo, Id, Dataset, ImgType, Slice, Time)), isProcessed=T),
+                         mutate(unique(select(allSegments, Id, Dataset, ImgType, Slice, Time)), isProcessed=T),
                          by=c("Dataset", "Id", "ImgType", "Slice", "Time"))
   imageList$isProcessed <- ifelse(is.na(imageList$isProcessed), F, T)
 } else {
@@ -179,29 +179,29 @@ for (nextSlice in seq(nrow(sliceList))) {
     sliceSegmentationInfo <- segmentImagesForOneSlice(sliceImgMetaData)
     cat("...",nrow(sliceSegmentationInfo),"segments in",nrow(sliceImgMetaData),"images",fill=T)
     
-    if (is.null(allSegmentationInfo)) {
-      allSegmentationInfo <- sliceSegmentationInfo
+    if (is.null(allSegments)) {
+      allSegments <- sliceSegmentationInfo
     } else {
-      removedSet <- setdiff(names(allSegmentationInfo), names(sliceSegmentationInfo))
-      addedSet <- setdiff(names(sliceSegmentationInfo), names(allSegmentationInfo))
+      removedSet <- setdiff(names(allSegments), names(sliceSegmentationInfo))
+      addedSet <- setdiff(names(sliceSegmentationInfo), names(allSegments))
       diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
       if (length(removedSet) + length(addedSet) > 0) {
         print("Existing:")
-        print(names(allSegmentationInfo))
+        print(names(allSegments))
         print("New:")
         print(names(sliceSegmentationInfo))
         print(paste(diffSet, collapse=","))
         stop("Datasets do not match up. Please consider removing segment files.")
       }
       
-      nDrop <- nrow(filter(allSegmentationInfo, 
+      nDrop <- nrow(filter(allSegments, 
                            Slice %in% sliceSegmentationInfo$Slice,
                            Id %in% sliceSegmentationInfo$Id))
       if (nDrop > 0) {
         cat("...dropping",nDrop,"rows from previous results",fill=T)
       }
       
-      allSegmentationInfo <- rbind(filter(allSegmentationInfo, 
+      allSegments <- rbind(filter(allSegments, 
                                           !(Slice %in% sliceSegmentationInfo$Slice & 
                                               Id %in% sliceSegmentationInfo$Id)), 
                                    sliceSegmentationInfo)
@@ -212,18 +212,18 @@ for (nextSlice in seq(nrow(sliceList))) {
           (nextSlice == nrow(sliceList)) | 
           ((nextSlice < nrow(sliceList)) & (sliceList$Dataset[nextSlice+1] != sliceList$Dataset[nextSlice]))) {
       ds <- sliceList$Dataset[nextSlice]
-      cat("...write", getSegmentFile(ds), "id's:",length(unique(filter(allSegmentationInfo, Dataset==ds)$Id)), fill=T)
-      write.csv(filter(allSegmentationInfo, Dataset==ds), getSegmentFile(ds), row.names=F)
+      cat("...write", getSegmentFile(ds), "id's:",length(unique(filter(allSegments, Dataset==ds)$Id)), fill=T)
+      write.csv(filter(allSegments, Dataset==ds), getSegmentFile(ds), row.names=F)
       
       print("...completeness:")
       print(group_by(left_join(sliceList, 
-                               mutate(unique(select(allSegmentationInfo, Id, Slice)), isSegmented=TRUE), 
+                               mutate(unique(select(allSegments, Id, Slice)), isSegmented=TRUE), 
                                by=c("Id", "Slice")), Dataset) %>% 
               summarise(complete = paste(round(100*sum(isSegmented, na.rm=T)/n(),2),"%",sep="" )))
       
       # Show progress
       ds <- group_by(left_join(sliceList, 
-                               mutate(unique(select(allSegmentationInfo, Id, Slice)), isSegmented=TRUE), 
+                               mutate(unique(select(allSegments, Id, Slice)), isSegmented=TRUE), 
                                by=c("Id", "Slice")), Dataset, Id) %>% 
         summarise(complete=round(100*sum(isSegmented, na.rm=T)/n())) %>%
         group_by(Dataset, complete) %>% summarise(n = n())
@@ -235,8 +235,8 @@ for (nextSlice in seq(nrow(sliceList))) {
 
 # write final results (again, just to be sure)
 for (ds in unique(imageList$Dataset)) {
-  cat("Write final", getSegmentFile(ds), "id's:",length(unique(filter(allSegmentationInfo, Dataset==ds)$Id)), fill=T)
-  write.csv(filter(allSegmentationInfo, Dataset==ds), getSegmentFile(ds), row.names=F)
+  cat("Write final", getSegmentFile(ds), "id's:",length(unique(filter(allSegments, Dataset==ds)$Id)), fill=T)
+  write.csv(filter(allSegments, Dataset==ds), getSegmentFile(ds), row.names=F)
 }
 
 
