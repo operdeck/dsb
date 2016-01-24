@@ -288,6 +288,9 @@ casePredictSet <- mutate(casePredictSet,
                          minVolumeSlice = minVolume*SliceCount,
                          maxPerim2 = maxPerim^2,
                          minPerim2 = minPerim^2)
+
+# TODO use Caret for this
+
 systole_m <- lm(caseData$Systole ~ ., data = casePredictSet)
 diastole_m <- lm(caseData$Diastole ~ ., data = casePredictSet)
 
