@@ -2,17 +2,11 @@
 # and write these with all meta info into "segments-<dataset>.csv"
 # for later consumption by prediction code.
 
-# TODO: pick up images first that have not yet been processed and append
-# (unless names have changed)
-# TODO: consider creating slice list seperately (w meta info listSliceImages)
-
-# TODO: for ideas on how to color EBimage segments: http://rpackages.ianhowson.com/bioc/EBImage/man/bwlabel.html
-
-# TODO: for segmentation use Voronoi-based segmentation: http://rpackages.ianhowson.com/bioc/EBImage/man/propagate.html
-# TODO: maybe remove objects outside of ROI in seg: http://rpackages.ianhowson.com/bioc/EBImage/man/rmObjects.html
-# TODO: segm: adaptive thresholding: http://rpackages.ianhowson.com/bioc/EBImage/man/thresh.html
-# TODO: segm: maybe use watershed
-# TODO: voronoi: https://www.bioconductor.org/packages/3.3/bioc/vignettes/EBImage/inst/doc/EBImage-introduction.html#cell-segmentation-example
+# Segmentation
+# - use ROI of middle slices (x 1.5 or 2 perhaps) for the outer slices
+# - for ideas on how to color EBimage segments: http://rpackages.ianhowson.com/bioc/EBImage/man/bwlabel.html
+# - adaptive thresholding: http://rpackages.ianhowson.com/bioc/EBImage/man/thresh.html
+# - segm: maybe use watershed (voronoi not a good idea)
 
 # 80-8 is right scale
 # 500-20 has same scale for img processing constants

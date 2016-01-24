@@ -13,7 +13,7 @@ source("util.R")
 library(pROC)
 
 # Threshold for LV segment probability
-pSegmentThreshold <- 0.5
+pSegmentThreshold <- 0.2
 
 # Confidence level for predictions
 confidence <- 0.95
@@ -28,255 +28,315 @@ print("Reading image meta data")
 imageList <- getImageList()
 
 print("Reading segmentation")
-allSegments <- NULL
-for (dataset in unique(imageList$Dataset)) {
-  if (file.exists(getSegmentFile(dataset))) {
-    segmentsPerDataset <- fread(getSegmentFile(dataset))
-    if (is.null(allSegments)) {
-      allSegments <- segmentsPerDataset
-    } else {
-      removedSet <- setdiff(names(allSegments), names(segmentsPerDataset))
-      addedSet <- setdiff(names(segmentsPerDataset), names(allSegments))
-      diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
-      if (length(removedSet) + length(addedSet) > 0) {
-        print(names(allSegments))
-        print(names(segmentsPerDataset))
-        print(diffSet)
-        stop("Datasets do not match up. Please consider removing files.")
+
+skipSegmentPrediction <- T
+
+if (skipSegmentPrediction) {
+  # Keep data if we want to skip the segmentation predict phase
+  print("!! Skipping segment prediction")
+  allSegments <- fread("allSegments-segmentsPredicted.csv")
+} else {
+  
+  allSegments <- NULL
+  for (dataset in unique(imageList$Dataset)) {
+    if (file.exists(getSegmentFile(dataset))) {
+      segmentsPerDataset <- fread(getSegmentFile(dataset))
+      if (is.null(allSegments)) {
+        allSegments <- segmentsPerDataset
+      } else {
+        removedSet <- setdiff(names(allSegments), names(segmentsPerDataset))
+        addedSet <- setdiff(names(segmentsPerDataset), names(allSegments))
+        diffSet <- paste(c(paste("-",removedSet), paste("+",addedSet)),collapse=", ")
+        if (length(removedSet) + length(addedSet) > 0) {
+          print(names(allSegments))
+          print(names(segmentsPerDataset))
+          print(diffSet)
+          stop("Datasets do not match up. Please consider removing files.")
+        }
+        allSegments <- rbind(allSegments, segmentsPerDataset)
       }
-      allSegments <- rbind(allSegments, segmentsPerDataset)
     }
   }
-}
-setkey(allSegments, Id, Slice, Time, UUID)
-
-# First, match the ones with the same UUID
-segClassificationSet <- left_join(select(classifiedSegments, Id, Slice, Time, UUID, isLV), 
-                                  allSegments, 
-                                  by=c("Id", "Slice", "Time", "UUID"))
-
-# For the others, find the best segment match per each Id/Slice/Time
-# TODO: not sure what happens if none of the UUID's match
-if (nrow(filter(segClassificationSet, is.na(Dataset))) > 0) {
+  setkey(allSegments, Id, Slice, Time, UUID)
   
-  stop("Refactor code to match new segmentation to old classification!!")
+  # First, match the ones with the same UUID
+  segClassificationSet <- left_join(select(classifiedSegments, Id, Slice, Time, UUID, isLV), 
+                                    allSegments, 
+                                    by=c("Id", "Slice", "Time", "UUID"))
   
-  classifiedSegmentsOlder <- left_join(select(filter(segClassificationSet, is.na(Dataset)), Id, Slice, Time, UUID, isLV),
-                                       select(classifiedSegments, Id, Slice, Time, UUID, isLV, m.cx, m.cy))
+  # For the others, find the best segment match per each Id/Slice/Time
+  # TODO: not sure what happens if none of the UUID's match
+  newSegmentationOldClassification <- filter(segClassificationSet, is.na(Dataset))
   segClassificationSet <- filter(segClassificationSet, !is.na(Dataset))
-  s <- unique(select(classifiedSegmentsOlder, Id, Slice, Time))
-  allCandidateSegments <- left_join(s, allSegments, by=c("Id","Slice","Time"))
-  prevId <- -1
-  prevSlice <- -1
-  for (i in seq(nrow(s))) {
-    candidateSegments <- filter(allCandidateSegments, Id==s$Id[i], Slice==s$Slice[i], Time==s$Time[i]) # all segs in this image
-    lv <- left_join(s[i], classifiedSegmentsOlder, by=c("Id","Slice","Time")) %>% filter(isLV) # classified LV in this image
+  
+  if (nrow(newSegmentationOldClassification) > 0) {
+    classifiedSegmentsOlder <- left_join(select(newSegmentationOldClassification, Id, Slice, Time, UUID, isLV),
+                                         select(classifiedSegments, Id, Slice, Time, UUID, isLV, m.cx, m.cy))
+    classifiedImagesOlder <- unique(select(classifiedSegmentsOlder, Id, Slice, Time))
+    cat(nrow(classifiedImagesOlder), "images have new segmentation to match with existing classification",fill=T)
+    allCandidateSegments <- left_join(classifiedImagesOlder, allSegments, by=c("Id","Slice","Time"))
     
-    if (!(prevId == s$Id[i] & prevSlice == s$Slice[i])) {
-      cat("Matching existing classification to new segmentation for Id", 
-          s$Id[i], "Slice", s$Slice[i], "# images", nrow(filter(s, Id == s$Id[i], Slice == s$Slice[i])), 
-          "candidates:", nrow(candidateSegments), "classified:", nrow(lv), fill=T)
-      prevId <- s$Id[i]
-      prevSlice <- s$Slice[i]
-    }
-    
-    candidateSegments$isLV <- NA
-    candidateSegments <- candidateSegments[,names(segClassificationSet),with=F] # make sure cols have the same order
-    
-    if (nrow(lv) == 1) {
-      # Set LV to the segment closest to the identified one. Note: similar code in classify.R
-      distToLVSeg <- sqrt((candidateSegments$m.cx - lv$m.cx)^2 + (candidateSegments$m.cy - lv$m.cy)^2)
-      segLV <- candidateSegments$segIndex[which.min(distToLVSeg)]
-      candidateSegments$isLV <- (candidateSegments$segIndex == segLV & distToLVSeg < 5) # abs distance threshold like in classify.R
+    prevId <- -1
+    prevSlice <- -1
+    for (i in seq(nrow(classifiedImagesOlder))) {
+      candidateSegments <- filter(allCandidateSegments, 
+                                  Id==classifiedImagesOlder$Id[i], 
+                                  Slice==classifiedImagesOlder$Slice[i], 
+                                  Time==classifiedImagesOlder$Time[i]) # all segs in this image
+      lv <- left_join(classifiedImagesOlder[i], 
+                      classifiedSegmentsOlder, 
+                      by=c("Id","Slice","Time")) %>% filter(isLV) # classified LV in this image
+      if (!(prevId == classifiedImagesOlder$Id[i] & prevSlice == classifiedImagesOlder$Slice[i])) {
+        cat("Matching existing classification to new segmentation for Id", classifiedImagesOlder$Id[i], 
+            "Slice", classifiedImagesOlder$Slice[i], 
+            "# images", nrow(filter(classifiedImagesOlder, Id == classifiedImagesOlder$Id[i], Slice == classifiedImagesOlder$Slice[i])), 
+            "candidates:", nrow(candidateSegments), 
+            "classified:", nrow(lv), fill=T)
+        prevId <- classifiedImagesOlder$Id[i]
+        prevSlice <- classifiedImagesOlder$Slice[i]
+      }
+      
+      candidateSegments$isLV <- NA
+      candidateSegments <- candidateSegments[,names(newSegmentationOldClassification),with=F] # make sure cols have the same order
+      
+      if (nrow(lv) == 1) {
+        # Set LV to the segment closest to the identified one. Note: similar code in classify.R
+        distToLVSeg <- sqrt((candidateSegments$m.cx - lv$m.cx)^2 + (candidateSegments$m.cy - lv$m.cy)^2)
+        segLV <- candidateSegments$segIndex[which.min(distToLVSeg)]
+        candidateSegments$isLV <- (candidateSegments$segIndex == segLV & distToLVSeg < 5) # abs distance threshold like in classify.R
+        segClassificationSet <- rbind(segClassificationSet, candidateSegments)
+      } else {
+        cat("WARN:",nrow(lv),"LV segments in image", classifiedImagesOlder$Time[i], fill=T)
+      }
+      
       segClassificationSet <- rbind(segClassificationSet, candidateSegments)
-    } else {
-      cat("WARN:",nrow(lv),"LV segments in image", s$Time[i], fill=T)
     }
-    
-    segClassificationSet <- rbind(segClassificationSet, candidateSegments)
   }
+  
+  # Quick report on the segmentation prediction data set.
+  cat("Segment predict set has",nrow(segClassificationSet),"observations with a pos rate of",sum(segClassificationSet$isLV,na.rm=T)/nrow(segClassificationSet))
+  cat("   number of Ids   :",nrow(unique(select(segClassificationSet,Id))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id))),fill=T)
+  cat("   number of Slices:",nrow(unique(select(segClassificationSet,Id,Slice))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id,Slice))),fill=T)
+  cat("   number of Images:",nrow(unique(select(segClassificationSet,Id,Slice,Time))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id,Slice,Time))),fill=T)
+  
+  # Build up prediction set by creating derived variables and dropping non-predictors
+  segClassificationSetIDs <- select(segClassificationSet, Id, Dataset, Slice, Time)
+  segClassificationSet <- createSegmentPredictSet(filter(segClassificationSet, !is.na(isLV)))
+  
+  # quick plots to verify results
+  
+  # TODO: (trigonometric) interpolation & outlier detection
+  # NOTE: the graphs of area vs time have missing data points as well
+  # as outliers (typically near zero). These should be fixed somehow through
+  # interpolation or other means.
+  # ID 403/Slice 10 shows near-zero's for time 9..16
+  # ID 334/Slice 15 shows missing values for time 10..15
+  # ID 504/Slice 17 shows a near perfect graph
+  # See for example:
+  #  http://stats.stackexchange.com/questions/63233/fourier-trigonometric-interpolation
+  
+  # l <- head(unique(select(segClassificationSet, Id, Slice)),5)
+  # for (i in seq(nrow(l))) {
+  #   slice <- filter(segClassificationSet, Id==l$Id[i], Slice==l$Slice[i])
+  #   
+  #   plotSlice(filter(slice, isLV))
+  # }
+  
+  # Build up the data set for training and classification
+  
+  # We keep the meta-attributes as these are useful for the further roll-up
+  # allSegments <- select(allSegments, 
+  #                       -m.cx, -m.cy, -distToROI)
+  
+  valSet <- sample.int(nrow(segClassificationSet), validationPercentage*nrow(segClassificationSet))
+  trainDataPredictorsOnly <- select(segClassificationSet, -isLV, -isProcessed, -distToROI) # NB: isProcessed/distToROI shouldnt be here anymore...
+  
+  cat("Building segment model with",length(names(trainDataPredictorsOnly)),"predictors",fill=T)
+  
+  uniVariateAnalysis <- data.frame(Predictor=names(trainDataPredictorsOnly),
+                                   validation=sapply(trainDataPredictorsOnly, 
+                                                     function(p) {auc(segClassificationSet$isLV[valSet], p[valSet])}),
+                                   train=sapply(trainDataPredictorsOnly, 
+                                                function(p) {auc(segClassificationSet$isLV[-valSet], p[-valSet])}))
+  uniVariateAnalysis <- gather(uniVariateAnalysis, dataset, auc, -Predictor)
+  print(ggplot(uniVariateAnalysis, aes(x=Predictor, y=auc, fill=dataset))+
+          geom_bar(stat="identity",position="dodge")+
+          theme(axis.text.x = element_text(angle = 45, hjust=1))+
+          geom_hline(yintercept=0.52,linetype="dashed")+
+          ggtitle("AUC of individual predictors for segmentation model"))
+  
+  leftVentricleSegmentModel <- xgboost(data = data.matrix(trainDataPredictorsOnly[-valSet]), 
+                                       label = segClassificationSet$isLV[-valSet], 
+                                       max.depth = 2, eta = 0.1, nround = 100,
+                                       objective = "binary:logistic", missing=NaN, verbose=0)
+  imp_matrix <- xgb.importance(feature_names = names(trainDataPredictorsOnly), model = leftVentricleSegmentModel)
+  print(xgb.plot.importance(importance_matrix = imp_matrix))
+  
+  # Get an idea of the accuracy. Note, it seems very high always.
+  probLV <- predict(leftVentricleSegmentModel, data.matrix(trainDataPredictorsOnly))
+  cat("AUC for validation set:", auc(segClassificationSet$isLV[valSet], probLV[valSet]), fill=T)
+  
+  # Distribution of probabilities
+  plotSet <- group_by(data.frame(predictedProbability = cut(probLV, 10), #cut2(probLV, g=20), # equi-weight
+                                 isLV = segClassificationSet$isLV,
+                                 isVal = (seq(nrow(segClassificationSet)) %in% valSet)), predictedProbability) %>% 
+    summarise(validation = sum(isLV & isVal)/sum(isVal),
+              train = sum(isLV & !isVal)/sum(!isVal),
+              count = n()) %>%
+    gather(dataset, probability, -count, -predictedProbability)
+  print(ggplot(plotSet, aes(x=predictedProbability, y=probability, fill=dataset)) + 
+          geom_bar(stat="identity",position="dodge") + 
+          ggtitle("Segment Prediction") +
+          theme(axis.text.x = element_text(angle = 45, hjust = 1)))
+  
+  # Keep data for analysis elsewhere
+  write.csv(select(trainData, -UUID), "segmentTrainSet.csv", row.names=F)
+  
+  # Apply on full dataset
+  cat("Apply segment model to", nrow(allSegments), "segments", fill=T)
+  allSegments$pLV <- predict(leftVentricleSegmentModel, 
+                             data.matrix(createSegmentPredictSet(select(allSegments, -distToROI, -isProcessed))))
+  
+  # Keep data if we want to skip the segmentation predict phase
+  allSegments <- select(allSegments, -FileName, -isProcessed, -UUID, -distToROI) # maybe even more...
+  write.csv(allSegments, "allSegments-segmentsPredicted.csv", row.names=F)
 }
 
-# Quick report on the segmentation prediction data set.
-cat("Segment predict set has",nrow(segClassificationSet),"observations with a pos rate of",sum(segClassificationSet$isLV)/nrow(segClassificationSet))
-cat("   number of Ids   :",nrow(unique(select(segClassificationSet,Id))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id))),fill=T)
-cat("   number of Slices:",nrow(unique(select(segClassificationSet,Id,Slice))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id,Slice))),fill=T)
-cat("   number of Images:",nrow(unique(select(segClassificationSet,Id,Slice,Time))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id,Slice,Time))),fill=T)
+# Remove segments with pLV < threshold
+allSegments <- filter(allSegments, pLV > pSegmentThreshold)
+print(qplot(allSegments$pLV))
 
-# Build up prediction set by creating derived variables and dropping non-predictors
-segClassificationSetIDs <- select(segClassificationSet, Id, Dataset, Slice, Time)
-segClassificationSet <- createSegmentPredictSet(filter(segClassificationSet, !is.na(isLV)))
+# Keep only the segments with max pLV for each image
+allSegments[, isLV := segIndex == segIndex[which.max(pLV)], by=c("Dataset","Id","Slice","Time")]
+imageData <- createImagePredictSet(left_join(imageList, 
+                                             select(filter(allSegments, isLV), 
+                                                    -Offset, -SliceCount, -SliceIndex, -SliceOrder,
+                                                    -PixelSpacing.x, -PixelSpacing.y, 
+                                                    -SliceLocation, -SliceThickness),
+                                             by=c("Dataset", "Id", "ImgType", "Slice", "Time")))
+cat("Total",nrow(imageData),"images, of which",nrow(filter(imageData,isLV)),"have a detected LV",fill=T)
 
-# quick plots to verify results
-
-# TODO: (trigonometric) interpolation & outlier detection
-# NOTE: the graphs of area vs time have missing data points as well
-# as outliers (typically near zero). These should be fixed somehow through
-# interpolation or other means.
-# ID 403/Slice 10 shows near-zero's for time 9..16
-# ID 334/Slice 15 shows missing values for time 10..15
-# ID 504/Slice 17 shows a near perfect graph
-# See for example:
-#  http://stats.stackexchange.com/questions/63233/fourier-trigonometric-interpolation
-
-# l <- head(unique(select(segClassificationSet, Id, Slice)),5)
-# for (i in seq(nrow(l))) {
-#   slice <- filter(segClassificationSet, Id==l$Id[i], Slice==l$Slice[i])
-#   
-#   plotSlice(filter(slice, isLV))
-# }
-
-# Build up the data set for training and classification
-
-# We keep the meta-attributes as these are useful for the further roll-up
-# allSegments <- select(allSegments, 
-#                       -m.cx, -m.cy, -distToROI)
-
-valSet <- sample.int(nrow(segClassificationSet), validationPercentage*nrow(segClassificationSet))
-trainDataPredictorsOnly <- select(segClassificationSet, -isLV, -isProcessed, -distToROI) # NB: isProcessed/distToROI shouldnt be here anymore...
-
-cat("Building segment model with",length(names(trainDataPredictorsOnly)),"predictors",fill=T)
-
-uniVariateAnalysis <- data.frame(Predictor=names(trainDataPredictorsOnly),
-                                 validation=sapply(trainDataPredictorsOnly, 
-                                                   function(p) {auc(segClassificationSet$isLV[valSet], p[valSet])}),
-                                 train=sapply(trainDataPredictorsOnly, 
-                                              function(p) {auc(segClassificationSet$isLV[-valSet], p[-valSet])}))
-uniVariateAnalysis <- gather(uniVariateAnalysis, dataset, auc, -Predictor)
-print(ggplot(uniVariateAnalysis, aes(x=Predictor, y=auc, fill=dataset))+
-        geom_bar(stat="identity",position="dodge")+
-        theme(axis.text.x = element_text(angle = 45, hjust=1))+
-        geom_hline(yintercept=0.52,linetype="dashed")+
-        ggtitle("AUC of individual predictors for segmentation model"))
-
-leftVentricleSegmentModel <- xgboost(data = data.matrix(trainDataPredictorsOnly[-valSet]), 
-                                     label = segClassificationSet$isLV[-valSet], 
-                                     max.depth = 2, eta = 0.1, nround = 100,
-                                     objective = "binary:logistic", missing=NaN, verbose=0)
-imp_matrix <- xgb.importance(feature_names = names(trainDataPredictorsOnly), model = leftVentricleSegmentModel)
-print(xgb.plot.importance(importance_matrix = imp_matrix))
-
-# Get an idea of the accuracy. Note, it seems very high always.
-probLV <- predict(leftVentricleSegmentModel, data.matrix(trainDataPredictorsOnly))
-cat("AUC for validation set:", auc(segClassificationSet$isLV[valSet], probLV[valSet]), fill=T)
-
-# Distribution of probabilities
-plotSet <- group_by(data.frame(predictedProbability = cut(probLV, 10), #cut2(probLV, g=20), # equi-weight
-                               isLV = segClassificationSet$isLV,
-                               isVal = (seq(nrow(segClassificationSet)) %in% valSet)), predictedProbability) %>% 
-  summarise(validation = sum(isLV & isVal)/sum(isVal),
-            train = sum(isLV & !isVal)/sum(!isVal),
-            count = n()) %>%
-  gather(dataset, probability, -count, -predictedProbability)
-print(ggplot(plotSet, aes(x=predictedProbability, y=probability, fill=dataset)) + 
-        geom_bar(stat="identity",position="dodge") + 
-        ggtitle("Segment Prediction") +
-        theme(axis.text.x = element_text(angle = 45, hjust = 1)))
-
-# Keep data for analysis elsewhere
-write.csv(select(trainData, -UUID), "segmentTrainSet.csv", row.names=F)
-
-# Apply on full dataset
-cat("Apply segment model to", nrow(allSegments), "segments", fill=T)
-allSegments$pLV <- predict(leftVentricleSegmentModel, 
-                           as.matrix(select(allSegments, -Id, -Slice, -Time, -Dataset, -ImgType, -Offset, -segIndex, -UUID)))
-
-# Aggregation to Image level
-imageData <- left_join(group_by(allSegments, Id, Slice, Time) %>%
-                         summarise(segIndex = segIndex[which.max(pLV)]),
-                       allSegments)
-# plotSlice( filter(imageData, Id == 657, Slice == 9))
-
-sliceList <- fread("slicelist.csv")
-imageData <- left_join(imageData, sliceList)
 pLeftVentricle <- cut(imageData$pLV,10)
 # This should show that lower slice order have a higher probabilities for the left ventricle (better segmentation)
 print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_histogram()+
         ggtitle("LV Probability vs Slice Order") +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
-idIncomplete <- unique(imageData$Id[which(!complete.cases(imageData))])
-cat(length(idIncomplete),"incomplete cases for image data, Id's:",idIncomplete,fill=T)
 
-# Filter on segmentation threshold. This will cause some images to be
-# dropped but will increase the likelihood that they're segmented 
-# correctly.
-sliceData <- left_join(sliceList, group_by(filter(imageData, pLV >= pSegmentThreshold), Id, Slice) %>%
-                         summarise(maxArea = max(area,na.rm=T),
-                                   minArea = min(area,na.rm=T),
+# plot one
+# plotSlice(filter(imageData, Id==657, Slice==9))
+
+# Aggregate up to slice level
+sliceList <- getSliceList(playlist=imageList)
+sliceData <- left_join(sliceList, 
+                       group_by(imageData, Id, Slice) %>%
+                         summarise(maxArea = max(pi*radius.max^2,na.rm=T),
+                                   minArea = min(pi*radius.max^2,na.rm=T),
                                    meanArea = mean(area,na.rm=T),
+                                   sdArea = sd(area, na.rm=T),
+                                   
                                    maxPerimeter = max(perimeter,na.rm=T),
                                    minPerimeter = min(perimeter,na.rm=T),
-                                   meanPerimeter = mean(perimeter,na.rm=T))) %>%
-  filter(SliceOrder <= 2)
+                                   meanPerimeter = mean(perimeter,na.rm=T),
+                                   
+                                   meanLVConfidence = mean(pLV,na.rm=T),
+                                   isLV = any(isLV)),
+                       by=c("Id", "Slice"))
+  
+cat("Total",nrow(sliceData),"slice, of which",nrow(filter(sliceData,isLV)),"have a detected LV",fill=T)
+sliceData <- filter(sliceData, !is.na(isLV)) # keep only the ones with an LV
+# poorly segmented slices: filter(sliceData, is.na(isLV), with=T)
 
-idIncomplete <- unique(sliceData$Id[which(!complete.cases(sliceData))])
-cat(length(idIncomplete),"incomplete slices for slice data, Id's:",idIncomplete,fill=T)
+# For now - only keep the middle slices. If we keep all, make sure to filter outliers.
+sliceData <- filter(sliceData, SliceOrder == 1)
 
-# Plot the areas for a couple of slices
-for (n in seq(20)) {
-  idData <- filter(sliceData, Id==n) %>% gather(metric, area, ends_with("Area"))
-  if (!any(is.na(idData))) {
-    print(ggplot(idData, aes(x=Slice, y=area, colour=metric))+geom_line()+geom_point()+ggtitle(paste("Id",n)))
-  }
-}
+# How does it look for one ID?
+plotData <- gather(select(sliceData, Id, SliceLocation, ends_with("Area")), predictor, value, -Id, -SliceLocation)
+ggplot(filter(plotData, Id==4), aes(x=SliceLocation, y=value, colour=factor(predictor)))+geom_point()+geom_line()
 
-# Aggregates by Id...
-# TODO get more meta-data in, and what happened to slice thickness etc??
-# now only two predictors...
-caseData <- group_by(sliceData, Id) %>%
-  summarise(maxVolume = sum(maxArea, na.rm=T),
-            minVolume = sum(minArea, na.rm=T),
-            maxPerim  = mean(maxPerimeter, na.rm=T),
-            minPerim  = mean(minPerimeter, na.rm=T),
-            SlicePct  = n()/first(SliceCount))
+# Now, aggregate up to Id
+caseList <- getIdList(playlist=imageList)
+caseData <- left_join(caseList, group_by(sliceData, Id) %>%
+                        summarise(maxVolume = sum(maxArea * SliceThickness, na.rm=T),
+                                  minVolume = sum(minArea * SliceThickness, na.rm=T),
+                                  
+                                  meanLVConfidence = mean(meanLVConfidence, na.rm=T),
+                                  
+                                  maxPerim  = mean(maxPerimeter, na.rm=T),
+                                  minPerim  = mean(minPerimeter, na.rm=T),
+                                  
+                                  isLV = any(isLV)), by="Id")
+
+cat("Total",nrow(caseData),"cases, of which",nrow(filter(caseData,isLV)),"have a detected LV",fill=T)
 
 # Train data
 trainVolumes <- fread('data/train.csv') 
-caseData <- left_join(caseData, trainVolumes)
+caseData <- left_join(caseData, trainVolumes, by="Id")
 
 # TODO deal with missing Id's - see slicelist
 
 # Develop model (TODO: on -validation set)
 # TODO: glm or svm?
-systole_m <- lm(caseData$Systole ~ ., 
-                data = select(caseData, -Systole, -Diastole))
-diastole_m <- lm(caseData$Diastole ~ ., 
-                 data = select(caseData, -Systole, -Diastole))
+
+casePredictSet <- select(caseData, 
+                         -Id, -Dataset, -ImgType, -isLV,
+                         -Systole, -Diastole)
+casePredictSet <- mutate(casePredictSet,
+                         maxVolume2 = maxVolume^2,
+                         minVolume2 = minVolume^2,
+                         maxVolumeSlice = maxVolume*SliceCount,
+                         minVolumeSlice = minVolume*SliceCount,
+                         maxPerim2 = maxPerim^2,
+                         minPerim2 = minPerim^2)
+systole_m <- lm(caseData$Systole ~ ., data = casePredictSet)
+diastole_m <- lm(caseData$Diastole ~ ., data = casePredictSet)
+
+# systole_m_xgb <- xgboost(data = data.matrix(casePredictSet),
+#                                      label = caseData$Systole, 
+#                                      max.depth = 4, eta = 0.1, nround = 100,
+#                          objective='reg:linear', verbose=0, missing=NaN)
+# 
+# blah <- predict(systole_m_xgb, newdata = data.matrix(casePredictSet), missing=NaN)
 
 resultData <- data.frame(caseData, 
                          Systole = predict(systole_m, 
-                                           newdata = caseData,
+                                           newdata = casePredictSet,
                                            interval="confidence", level=confidence),
                          Diastole = predict(diastole_m, 
-                                            newdata = caseData,
+                                            newdata = casePredictSet,
                                             interval="confidence", level=confidence))
 
 cat("Missing cases:",sum(is.na(resultData$Systole.fit) | is.na(resultData$Diastole.fit)),"out of",nrow(resultData),fill=T)
 
-clipUpper <- function(v) {
-  result <- quantile(v, (confidence+1)/2)
-  if (is.na(result) | result < min(v)) {
-    result <- max(v)
-  }
-  return(result)
+# NA imputation
+predictions <- c("Systole.fit", "Systole.lwr", "Systole.upr", "Diastole.fit", "Diastole.lwr", "Diastole.upr")
+for (pName in predictions) {
+  resultData[[pName]] <- ifelse(is.na(resultData[[pName]]), mean(resultData[[pName]],na.rm=T), resultData[[pName]])
 }
-clipLower <- function(v) {
-  result <- quantile(v, (1-confidence)/2)
-  if (is.na(result) | result > max(v)) {
-    result <- max(v)
-  }
-  return(result)
-}
-resultData$Systole.fit  <- ifelse(is.na(resultData$Systole.fit),  mean(trainVolumes$Systole), resultData$Systole.fit)
-resultData$Diastole.fit <- ifelse(is.na(resultData$Diastole.fit), mean(trainVolumes$Diastole), resultData$Diastole.fit)
-resultData$Systole.lwr  <- ifelse(is.na(resultData$Systole.lwr),  clipLower(trainVolumes$Systole),  resultData$Systole.lwr)
-resultData$Diastole.lwr <- ifelse(is.na(resultData$Diastole.lwr), clipLower(trainVolumes$Diastole), resultData$Diastole.lwr)
-resultData$Systole.upr  <- ifelse(is.na(resultData$Systole.upr),  clipUpper(trainVolumes$Systole), resultData$Systole.upr)
-resultData$Diastole.upr <- ifelse(is.na(resultData$Diastole.upr), clipUpper(trainVolumes$Diastole), resultData$Diastole.upr)
 
-# Plot the results...
-plotData <- select(resultData[which(complete.cases(resultData)),], contains("stole"), Id) %>% 
+# clipUpper <- function(v) {
+#   result <- quantile(v, (confidence+1)/2)
+#   if (is.na(result) | result < min(v)) {
+#     result <- max(v)
+#   }
+#   return(result)
+# }
+# clipLower <- function(v) {
+#   result <- quantile(v, (1-confidence)/2)
+#   if (is.na(result) | result > max(v)) {
+#     result <- max(v)
+#   }
+#   return(result)
+# }
+# resultData$Systole.fit  <- ifelse(is.na(resultData$Systole.fit),  mean(trainVolumes$Systole), resultData$Systole.fit)
+# resultData$Diastole.fit <- ifelse(is.na(resultData$Diastole.fit), mean(trainVolumes$Diastole), resultData$Diastole.fit)
+# resultData$Systole.lwr  <- ifelse(is.na(resultData$Systole.lwr),  clipLower(trainVolumes$Systole),  resultData$Systole.lwr)
+# resultData$Diastole.lwr <- ifelse(is.na(resultData$Diastole.lwr), clipLower(trainVolumes$Diastole), resultData$Diastole.lwr)
+# resultData$Systole.upr  <- ifelse(is.na(resultData$Systole.upr),  clipUpper(trainVolumes$Systole), resultData$Systole.upr)
+# resultData$Diastole.upr <- ifelse(is.na(resultData$Diastole.upr), clipUpper(trainVolumes$Diastole), resultData$Diastole.upr)
+
+# Plot the results... [which(complete.cases(resultData)),]
+plotData <- select(resultData, contains("stole"), Id) %>% 
   gather(Phase, Actual, -Id, -contains(".")) %>%
   mutate(Predicted = ifelse(Phase == "Diastole", Diastole.fit, Systole.fit))
 print(ggplot(plotData, 
@@ -335,7 +395,7 @@ createProbabilities <- function(ds)
   }
   probs <- data.frame(Id = as.vector(sapply(ds$Id,function(n){paste(n,c('Diastole','Systole'),sep="_")})), probs)
   names(probs) <- c('Id', paste("P",0:(NPROBS-1),sep=""))
-
+  
   return(probs)
 }
 
@@ -358,7 +418,7 @@ crps <- 0
 for (i in seq(nrow(results_Train))) {
   probs1 <- as.vector(as.matrix(trainProbabilities[2*i-1,2:ncol(trainProbabilities)]))
   truth1 <- ifelse(seq(NPROBS) >= results_Train$Diastole[i], 1, 0)
-
+  
   probs2 <- as.vector(as.matrix(trainProbabilities[2*i,2:ncol(trainProbabilities)]))
   truth2 <- ifelse(seq(NPROBS) >= results_Train$Systole[i], 1, 0)
   
