@@ -29,12 +29,15 @@ imageList <- getImageList()
 
 print("Reading segmentation")
 
+imagePredictFile <- "allSegments-segmentsPredicted.csv"
+segmentPredictFile <- "segmentTrainSet.csv"
+
 skipSegmentPrediction <- T
 
-if (skipSegmentPrediction) {
+if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   # Keep data if we want to skip the segmentation predict phase
   print("!! Skipping segment prediction")
-  allSegments <- fread("allSegments-segmentsPredicted.csv")
+  allSegments <- fread(imagePredictFile)
 } else {
   
   allSegments <- NULL
@@ -114,7 +117,7 @@ if (skipSegmentPrediction) {
   }
   
   # Quick report on the segmentation prediction data set.
-  cat("Segment predict set has",nrow(segClassificationSet),"observations with a pos rate of",sum(segClassificationSet$isLV,na.rm=T)/nrow(segClassificationSet))
+  cat("Segment predict set has",nrow(segClassificationSet),"observations with a pos rate of",sum(segClassificationSet$isLV,na.rm=T)/nrow(segClassificationSet),fill=T)
   cat("   number of Ids   :",nrow(unique(select(segClassificationSet,Id))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id))),fill=T)
   cat("   number of Slices:",nrow(unique(select(segClassificationSet,Id,Slice))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id,Slice))),fill=T)
   cat("   number of Images:",nrow(unique(select(segClassificationSet,Id,Slice,Time))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id,Slice,Time))),fill=T)
@@ -190,7 +193,7 @@ if (skipSegmentPrediction) {
           theme(axis.text.x = element_text(angle = 45, hjust = 1)))
   
   # Keep data for analysis elsewhere
-  write.csv(select(trainData, -UUID), "segmentTrainSet.csv", row.names=F)
+  write.csv(segClassificationSet, segmentPredictFile, row.names=F)
   
   # Apply on full dataset
   cat("Apply segment model to", nrow(allSegments), "segments", fill=T)
@@ -199,7 +202,7 @@ if (skipSegmentPrediction) {
   
   # Keep data if we want to skip the segmentation predict phase
   allSegments <- select(allSegments, -FileName, -isProcessed, -UUID, -distToROI) # maybe even more...
-  write.csv(allSegments, "allSegments-segmentsPredicted.csv", row.names=F)
+  write.csv(allSegments, imagePredictFile, row.names=F)
 }
 
 # Remove segments with pLV < threshold

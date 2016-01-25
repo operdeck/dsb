@@ -2,6 +2,10 @@
 # and write these with all meta info into "segments-<dataset>.csv"
 # for later consumption by prediction code.
 
+# update
+# source("https://bioconductor.org/biocLite.R")
+# biocLite()
+
 # Segmentation
 # - use ROI of middle slices (x 1.5 or 2 perhaps) for the outer slices
 # - for ideas on how to color EBimage segments: http://rpackages.ianhowson.com/bioc/EBImage/man/bwlabel.html
@@ -50,7 +54,7 @@ segmentImagesForOneSlice <- function(imgMetaData) {
     }
   }
   avgImg <- avgImg / length(allImages)
-  
+
   sliceSegmentation <- NULL
   for (i in 1:nrow(imgMetaData)) {
     pixelAreaScale <- imgMetaData$PixelSpacing.x[i] * imgMetaData$PixelSpacing.y[i]
@@ -85,9 +89,14 @@ segmentImagesForOneSlice <- function(imgMetaData) {
       segmentInfo <- cbind(imgMetaData[i,],
                            data.frame(computeFeatures.moment(img_segmented)),
                            data.frame(computeFeatures.shape(img_segmented)))
-      segmentInfo$distToROI <- sqrt((segmentInfo$m.cx - roi$m.cx)^2 + (segmentInfo$m.cy - roi$m.cy)^2)
+      distToROI <- sqrt((segmentInfo$m.cx - roi$m.cx)^2 + (segmentInfo$m.cy - roi$m.cy)^2)
+      
       segmentInfo$segIndex <- seq(nrow(segmentInfo))
-      segmentInfo$UUID <- sapply(1:nrow(segmentInfo),UUIDgenerate) # unique ID for each segment
+      segmentInfo$UUID  <- sapply(1:nrow(segmentInfo),UUIDgenerate) # unique ID for each segment
+      
+      segmentInfo$ROI.x <- round(roi$m.cx)
+      segmentInfo$ROI.y <- round(roi$m.cy)
+      segmentInfo$ROI.r <- round(roi$radius)
       
       # Only keep segments inside the ROI
       segmentInfo <- filter(segmentInfo, distToROI < roi$radius)
