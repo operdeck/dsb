@@ -8,10 +8,8 @@ source("Util.R")
 # * using SliceIndex instead of SliceRelIndex
 # * adds FileName
 # * removed slicelist.csv from git, added imagelist.csv
+# * also reads patient Age and Sex from meta data
 # Fills in slice thickness etc if they're missing by mean
-# TODO consider extracting patient info from header - possibly interesting for predictions
-#  (0010,0040) Patient's Sex [M]
-#  (0010,1010) Patient's Age [012Y]
 
 print("Listing image files")
 filez <- list.files("data", pattern=".*\\.dcm", recursive=T)
@@ -49,14 +47,19 @@ for (n in seq(nrow(playlist))) {
   playlist[n, "PixelSpacing.y" := as.numeric(gsub("^(.*) (.*)$", "\\2", pixelSpacing))]
   playlist[n, "SliceLocation"  := extractHeader(dicomHeader$hdr, "SliceLocation", numeric=TRUE)]
   playlist[n, "SliceThickness" := extractHeader(dicomHeader$hdr, "SliceThickness", numeric=TRUE)]
+  playlist[n, "PatientsSex"    := extractHeader(dicomHeader$hdr, "PatientsSex", numeric=FALSE)]
+  playlist[n, "PatientsAge"    := as.integer(gsub("^(.*)Y$","\\1",extractHeader(dicomHeader$hdr, "PatientsAge", numeric=FALSE)))]
 }
 print("Fill missing")
+print(summary(playlist))
 cat("Incomplete cases:",sum(!complete.cases(playlist)),"of",nrow(playlist),fill=T)
+
 # Fill in missings. Maybe should do a (tree) model instead of just mean.
 playlist[is.na(PixelSpacing.x), PixelSpacing.x := mean(PixelSpacing.x, na.rm=T)]
 playlist[is.na(PixelSpacing.y), PixelSpacing.y := mean(PixelSpacing.y, na.rm=T)]
 playlist[is.na(SliceLocation),  SliceLocation  := mean(SliceLocation, na.rm=T)]
 playlist[is.na(SliceThickness), SliceThickness := mean(SliceThickness, na.rm=T)]
+#playlist[is.na(PatientsAge),    PatientsAge    := mean(PatientsAge, na.rm=T)]
 
 write.csv(playlist, "imagelist.csv", row.names=F)
 
@@ -66,3 +69,4 @@ print(select(getIdList(), Dataset, Id) %>% group_by(Dataset) %>% summarise(n_Ids
 print(select(getSliceList(), Dataset, Id, Slice) %>% group_by(Dataset) %>% summarise(n_Slices = n()))
 print(select(getImageList(), Dataset, Id, Slice, FileName) %>% group_by(Dataset) %>% summarise(n_Images = n()))
 
+  

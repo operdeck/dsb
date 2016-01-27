@@ -8,6 +8,16 @@
 # scaled with the square of this. Poor man's approximation of 
 # Voronoi segmentation. Image dimension x/y might be part of slice meta data.
 
+# Volume = sum over slices *for a certain Time*
+# Group by time:
+#   Sum area(t) over slices (take scale and distance into account)
+# This gives a view of volume over time by ID
+# Min and Max volumes are the systole/diastole values
+
+# Additional Meta data
+# patient data contains age and sex information in DICOM tags
+# seems useful in the final models!
+
 source("util.R")
 
 library(pROC)
