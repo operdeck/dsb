@@ -116,7 +116,10 @@ getImageList <- function(type = "sax", playlist=NULL)
 
 getSliceList <- function(type = "sax", playlist=NULL)
 {
-  oneSliceGroup <- select(getImageList(type, playlist), Id, Dataset, ImgType, Offset, starts_with("Slice")) %>% 
+  oneSliceGroup <- select(getImageList(type, playlist), 
+                          Id, Dataset, ImgType, Offset, 
+                          starts_with("Slice"),
+                          starts_with("Patient")) %>% 
     arrange(Dataset, Id, ImgType, Slice) %>% unique()
   setkey(oneSliceGroup, Dataset, Id, ImgType, Slice)
   return(oneSliceGroup)
@@ -124,7 +127,10 @@ getSliceList <- function(type = "sax", playlist=NULL)
 
 getIdList <- function(type = "sax", playlist=NULL)
 {
-  ids <- select(getSliceList(type, playlist), Id, Dataset, ImgType, SliceCount) %>% unique()
+  ids <- select(getSliceList(type, playlist), 
+                Id, Dataset, ImgType, 
+                SliceCount,
+                starts_with("Patient")) %>% unique()
   setkey(ids, Id, Dataset, ImgType)
   return(ids)
 }
@@ -155,7 +161,7 @@ getImagesWithLVSegments <- function(slice)
 createSegmentPredictSet <- function(ds)
 {
   ds <- mutate(ds,
-               areaMultiplier = PixelSpacing.x * PixelSpacing.y,
+               areaMultiplier = PixelSpacing.x * PixelSpacing.y * 0.01, # 1 mL = 1000 mm3
                lengthMultiplier = sqrt(areaMultiplier),
                
                area = s.area*areaMultiplier,
@@ -199,7 +205,7 @@ createSegmentPredictSet <- function(ds)
 createImagePredictSet <- function(ds)
 {
   ds <- mutate(ds,
-               areaMultiplier = PixelSpacing.x * PixelSpacing.y,
+               areaMultiplier = PixelSpacing.x * PixelSpacing.y * 0.01,  # 1 mL = 1000 mm3
                lengthMultiplier = sqrt(areaMultiplier),
                
                area = s.area*areaMultiplier,

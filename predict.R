@@ -20,6 +20,7 @@
 
 source("util.R")
 
+library(caret)
 library(pROC)
 
 # Threshold for LV segment probability
@@ -28,6 +29,7 @@ pSegmentThreshold <- 0.2
 # Confidence level for predictions
 confidence <- 0.95
 
+# Used both in segment and case prediction
 validationPercentage <- 0.20
 
 # Identify the LV segments in the whole dataset by creating a model
@@ -222,7 +224,7 @@ print(qplot(allSegments$pLV))
 # Keep only the segments with max pLV for each image
 allSegments[, isLV := segIndex == segIndex[which.max(pLV)], by=c("Dataset","Id","Slice","Time")]
 imageData <- createImagePredictSet(left_join(imageList, 
-                                             select(filter(allSegments, isLV), 
+                                             select(filter(allSegments, isLV, SliceOrder <= 2), 
                                                     -Offset, -SliceCount, -SliceIndex, -SliceOrder,
                                                     -PixelSpacing.x, -PixelSpacing.y, 
                                                     -SliceLocation, -SliceThickness),
@@ -231,54 +233,86 @@ cat("Total",nrow(imageData),"images, of which",nrow(filter(imageData,isLV)),"hav
 
 pLeftVentricle <- cut(imageData$pLV,10)
 # This should show that lower slice order have a higher probabilities for the left ventricle (better segmentation)
-print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_histogram()+
+print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_bar()+
         ggtitle("LV Probability vs Slice Order") +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
+#
+# Plot some graphs
+#
 
-# plot one
-# plotSlice(filter(imageData, Id==657, Slice==9))
+# We'll plot results for some randomly chose Ids
+plotIds <- sample(unique(imageData$Id),10)
 
-# Aggregate up to slice level
-sliceList <- getSliceList(playlist=imageList)
-sliceData <- left_join(sliceList, 
-                       group_by(imageData, Id, Slice) %>%
-                         summarise(maxArea = max(pi*radius.max^2,na.rm=T),
-                                   minArea = min(pi*radius.max^2,na.rm=T),
-                                   meanArea = mean(area,na.rm=T),
-                                   sdArea = sd(area, na.rm=T),
-                                   
-                                   maxPerimeter = max(perimeter,na.rm=T),
-                                   minPerimeter = min(perimeter,na.rm=T),
-                                   meanPerimeter = mean(perimeter,na.rm=T),
-                                   
-                                   meanLVConfidence = mean(pLV,na.rm=T),
-                                   isLV = any(isLV)),
-                       by=c("Id", "Slice"))
-  
-cat("Total",nrow(sliceData),"slice, of which",nrow(filter(sliceData,isLV)),"have a detected LV",fill=T)
-sliceData <- filter(sliceData, !is.na(isLV)) # keep only the ones with an LV
-# poorly segmented slices: filter(sliceData, is.na(isLV), with=T)
+# For one Slice: plot area vs Time
+for (i in seq(length(plotIds))) {
+  plotSlice(filter(imageData, Id==plotIds[i], SliceOrder==1))
+}
 
-# For now - only keep the middle slices. If we keep all, make sure to filter outliers.
-sliceData <- filter(sliceData, SliceOrder == 1)
 
-# How does it look for one ID?
-plotData <- gather(select(sliceData, Id, SliceLocation, ends_with("Area")), predictor, value, -Id, -SliceLocation)
-ggplot(filter(plotData, Id==4), aes(x=SliceLocation, y=value, colour=factor(predictor)))+geom_point()+geom_line()
+# # For one Time: plot area vs Slice
+# for (plotId in plotIds) {
+#   slice <- na.omit(filter(imageData, Id==plotId))
+#   for (t in unique(slice$Time)) {
+#     slice <- na.omit(filter(imageData, Id==plotId, Time==t))
+#     plotData <- mutate(slice, 
+#                        area.radius.mean = pi*radius.mean^2,
+#                        area.radius.max = pi*radius.max^2,
+#                        area.radius.min = pi*radius.min^2) %>% 
+#       gather(metric, area, starts_with("area"))
+#     if (nrow(slice) > 1) {
+#       print(ggplot(plotData, aes(x=SliceLocation, y=area, colour=metric))+geom_line()+geom_point()+
+#               ggtitle(paste("Segment area over Slice for ID",
+#                             unique(slice$Id),"Time",unique(slice$Time))))
+#     } else {
+#       cat("No image with identified LV at all for Time:", unique(slice$Id), unique(slice$Time), fill=T)
+#     }
+#   }  
+# }
+
+# Aggregate up to Time level
+#sliceList <- getSliceList(playlist=imageList)
+timeData <- group_by(imageData, Id, Time) %>%
+  summarise(volArea     = sum(SliceThickness*area, na.rm=T),
+            volAreaEllipse = sum(SliceThickness*area.ellipse, na.rm=T),
+            volAreaMax  = sum(SliceThickness*pi*radius.max^2, na.rm=T),
+            volAreaMin  = sum(SliceThickness*pi*radius.min^2, na.rm=T),
+            volAreaMean = sum(SliceThickness*pi*radius.mean^2, na.rm=T),
+            isLV = any(isLV))
+plotData <- gather(timeData, metric, volume, contains("Area"))
+
+for (plotId in plotIds) {
+  slice <- filter(plotData, Id==plotId)
+  print(ggplot(slice, aes(x=Time, y=volume, colour=metric))+geom_line()+geom_point()+
+          ggtitle(paste("Volume over Time for ID", unique(slice$Id))))
+}
+
+cat("Total",nrow(timeData),"images, of which",nrow(filter(timeData,isLV)),"have a detected LV",fill=T)
+# poorly segmented slices: filter(timeData, is.na(isLV), with=T)
+timeData <- filter(timeData, !is.na(isLV)) # keep only the ones with an LV
 
 # Now, aggregate up to Id
 caseList <- getIdList(playlist=imageList)
-caseData <- left_join(caseList, group_by(sliceData, Id) %>%
-                        summarise(maxVolume = sum(maxArea * SliceThickness, na.rm=T),
-                                  minVolume = sum(minArea * SliceThickness, na.rm=T),
-                                  
-                                  meanLVConfidence = mean(meanLVConfidence, na.rm=T),
-                                  
-                                  maxPerim  = mean(maxPerimeter, na.rm=T),
-                                  minPerim  = mean(minPerimeter, na.rm=T),
-                                  
-                                  isLV = any(isLV)), by="Id")
+caseData <- left_join(caseList, group_by(timeData, Id) %>%
+                        summarise(
+                          max_volArea = max(volArea, na.rm=T),
+                          min_volArea = min(volArea, na.rm=T),
+                          sd_volArea  = sd(volArea, na.rm=T),
+                          
+                          max_volAreaEllipse = max(volAreaEllipse, na.rm=T),
+                          min_volAreaEllipse = min(volAreaEllipse, na.rm=T),
+                          
+                          max_volAreaMax = max(volAreaMax, na.rm=T),
+                          min_volAreaMax = min(volAreaMax, na.rm=T),
+                          
+                          #                                   max_volAreaMin = max(volAreaMin, na.rm=T),
+                          #                                   min_volAreaMin = min(volAreaMin, na.rm=T),
+                          
+                          #                           max_volAreaMean = max(volAreaMean, na.rm=T),
+                          #                           min_volAreaMean = min(volAreaMean, na.rm=T),
+                          
+                          isLV = any(isLV)), 
+                      by="Id")
 
 cat("Total",nrow(caseData),"cases, of which",nrow(filter(caseData,isLV)),"have a detected LV",fill=T)
 
@@ -288,32 +322,44 @@ caseData <- left_join(caseData, trainVolumes, by="Id")
 
 # TODO deal with missing Id's - see slicelist
 
-# Develop model (TODO: on -validation set)
-# TODO: glm or svm?
+# All cases (dev/train/test) with engineered extra features
 
 casePredictSet <- select(caseData, 
-                         -Id, -Dataset, -ImgType, -isLV,
-                         -Systole, -Diastole)
-casePredictSet <- mutate(casePredictSet,
-                         maxVolume2 = maxVolume^2,
-                         minVolume2 = minVolume^2,
-                         maxVolumeSlice = maxVolume*SliceCount,
-                         minVolumeSlice = minVolume*SliceCount,
-                         maxPerim2 = maxPerim^2,
-                         minPerim2 = minPerim^2)
+                         -Id, -Dataset, -ImgType, -isLV) # iffy
+casePredictSet <- mutate(casePredictSet, # extra vars
+                         maxVolume2 = max_volAreaEllipse^2,
+                         minVolume2 = max_volAreaEllipse^2,
+                         maxVolumeSlice = max_volAreaEllipse*SliceCount,
+                         minVolumeSlice = max_volAreaEllipse*SliceCount)
 
-# TODO use Caret for this
+### Build model (caret)
 
-systole_m <- lm(caseData$Systole ~ ., data = casePredictSet)
-diastole_m <- lm(caseData$Diastole ~ ., data = casePredictSet)
+casePredictSetTrain <- casePredictSet[!is.na(casePredictSet$Systole) & !is.na(casePredictSet$Diastole)] # set with known outcomes
 
-# systole_m_xgb <- xgboost(data = data.matrix(casePredictSet),
-#                                      label = caseData$Systole, 
-#                                      max.depth = 4, eta = 0.1, nround = 100,
-#                          objective='reg:linear', verbose=0, missing=NaN)
-# 
-# blah <- predict(systole_m_xgb, newdata = data.matrix(casePredictSet), missing=NaN)
+# IDEA: run this repeatedly, get the distribution of the outcomes to get confidence interval
+casePredictValidationRows <- sample.int(nrow(casePredictSetTrain), 
+                                        validationPercentage*nrow(casePredictSetTrain))
 
+# TEMP not using dev/val split
+casePredictSetTrainVal <- casePredictSetTrain[casePredictValidationRows,]  # validation % of this, for reporting error
+casePredictSetTrainDev <- casePredictSetTrain[-casePredictValidationRows,] # to be used for training the model
+
+fitControl <- trainControl(method = "cv",number = 10)
+systole_m <- train(Systole ~ ., data = select(casePredictSetTrainDev, -Diastole), 
+                   method = "lm", trControl = fitControl, verbose=F)
+diastole_m <- train(Diastole ~ ., data = select(casePredictSetTrainDev, -Systole),
+                    method = "lm", trControl = fitControl, verbose=F)
+print(plot(varImp(systole_m)))
+print(plot(varImp(diastole_m)))
+
+# Caret is nice however it does not give me the confidence intervals
+# maybe to repeated with 1-out sampling to get a 700 x 700 matrix etc then find mean and so
+# for now - just falling back to direct lm
+
+systole_m <- lm(Systole ~ ., data = select(casePredictSetTrainDev, -Diastole))
+diastole_m <- lm(Diastole ~ ., data = select(casePredictSetTrainDev, -Systole))
+
+# Predict ALL cases 
 resultData <- data.frame(caseData, 
                          Systole = predict(systole_m, 
                                            newdata = casePredictSet,
@@ -322,40 +368,24 @@ resultData <- data.frame(caseData,
                                             newdata = casePredictSet,
                                             interval="confidence", level=confidence))
 
-cat("Missing cases:",sum(is.na(resultData$Systole.fit) | is.na(resultData$Diastole.fit)),"out of",nrow(resultData),fill=T)
+print("Result data with predictions:")
+print(summary(resultData))
 
-# NA imputation
+# Fill in missing predictions
+cat("Missing cases:",sum(is.na(resultData$Systole.fit) | is.na(resultData$Diastole.fit)),"out of",nrow(resultData),fill=T)
+cat("   ",resultData$Id[which(is.na(resultData$Systole.fit) | is.na(resultData$Diastole.fit))],fill=T)
+cat("   will be replaced by mean",fill=T)
 predictions <- c("Systole.fit", "Systole.lwr", "Systole.upr", "Diastole.fit", "Diastole.lwr", "Diastole.upr")
 for (pName in predictions) {
   resultData[[pName]] <- ifelse(is.na(resultData[[pName]]), mean(resultData[[pName]],na.rm=T), resultData[[pName]])
 }
 
-# clipUpper <- function(v) {
-#   result <- quantile(v, (confidence+1)/2)
-#   if (is.na(result) | result < min(v)) {
-#     result <- max(v)
-#   }
-#   return(result)
-# }
-# clipLower <- function(v) {
-#   result <- quantile(v, (1-confidence)/2)
-#   if (is.na(result) | result > max(v)) {
-#     result <- max(v)
-#   }
-#   return(result)
-# }
-# resultData$Systole.fit  <- ifelse(is.na(resultData$Systole.fit),  mean(trainVolumes$Systole), resultData$Systole.fit)
-# resultData$Diastole.fit <- ifelse(is.na(resultData$Diastole.fit), mean(trainVolumes$Diastole), resultData$Diastole.fit)
-# resultData$Systole.lwr  <- ifelse(is.na(resultData$Systole.lwr),  clipLower(trainVolumes$Systole),  resultData$Systole.lwr)
-# resultData$Diastole.lwr <- ifelse(is.na(resultData$Diastole.lwr), clipLower(trainVolumes$Diastole), resultData$Diastole.lwr)
-# resultData$Systole.upr  <- ifelse(is.na(resultData$Systole.upr),  clipUpper(trainVolumes$Systole), resultData$Systole.upr)
-# resultData$Diastole.upr <- ifelse(is.na(resultData$Diastole.upr), clipUpper(trainVolumes$Diastole), resultData$Diastole.upr)
 
 # Plot the results... [which(complete.cases(resultData)),]
 plotData <- select(resultData, contains("stole"), Id) %>% 
   gather(Phase, Actual, -Id, -contains(".")) %>%
   mutate(Predicted = ifelse(Phase == "Diastole", Diastole.fit, Systole.fit))
-print(ggplot(plotData, 
+print(ggplot(na.omit(plotData), 
              aes(x=Actual,y=Predicted,colour=Phase))+
         geom_point()+stat_smooth(method = "lm")+
         xlim(0, 600)+ylim(0, 600)+geom_abline(slope=1,linetype="dashed")+
@@ -365,6 +395,7 @@ print("Correlations:")
 print(cor(resultData$Systole, resultData$Systole.fit, use="complete.obs"))
 print(cor(resultData$Diastole, resultData$Diastole.fit, use="complete.obs"))
 
+# Max Volume (mL) - fixed value used in submissions
 NPROBS <- 600
 
 # Translate a predicted fit with certain low and high bounds and a confidence interval
