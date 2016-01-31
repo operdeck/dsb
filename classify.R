@@ -115,16 +115,12 @@ createSegmentModelAndApply <- function(train, test)
 }
 
 
-# Read all segment info from the train set only
-# NOTE currently some slice meta info seems to be part of the segmentation data, but
-# this shouldnt be the case. Regardless, drop it and join in from the official meta data.
+# Read all segment info from the train set only and join with meta data
 imageList <- getImageList()
 allSegments <- 
-  left_join(select(fread(getSegmentFile("train")), 
-                   -FileName, -Offset, -SliceCount, -SliceIndex, -SliceOrder, 
-                   -PixelSpacing.x, -PixelSpacing.y, -SliceLocation, -SliceThickness), 
+  left_join(fread(getSegmentFile("train")), 
             imageList,
-            by=c("Dataset","Id","ImgType","Slice","Time"))
+            by=c("Id","Slice","Time"))
 
 # Read previous segment classification
 segPredictSet <- NULL
