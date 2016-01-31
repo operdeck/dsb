@@ -44,7 +44,6 @@ segmentImagesForOneSlice <- function(imgMetaData, prevROI=NULL) {
     allImages[[i]] <- img
   }
   
-
   if (is.null(prevROI)) {
     # Calculate 'average' image
     isFirst <- T
@@ -82,58 +81,88 @@ segmentImagesForOneSlice <- function(imgMetaData, prevROI=NULL) {
     }    
     
     if (roi$radius > 1) {
+      # Use ROI to normalize image intensity. Using only half radius because often high intensity around borders.
       roi_mask <- matrix(0, nrow=dim(img_original)[1], ncol=dim(img_original)[2])
-      roi_mask <- drawCircle(roi_mask, x=roi$m.cx, y=roi$m.cy, roi$radius, col=1, fill=T)
+      roi_mask <- drawCircle(roi_mask, x=roi$m.cx, y=roi$m.cy, roi$radius/2, col=1, fill=T)
       img_masked <- img_original*roi_mask
+      scale <- 1/max(img_masked)
       
-      #print(summary(img_original))
-      #print(summary(roi_mask))
-      cat("+++ scale max",max(img_masked),"80%",quantile(img_masked,0.80),fill=T)
-      #scale <- 1/max(img_masked)
-      scale <- min(c(1/quantile(img_masked,0.80),1/max(img_masked)))
+      #img_original <- img_original*scale # scale original image wrt ROI
       
-      img_original <- img_original*scale # scale original image wrt ROI
+      maskSize <- 6  #3.75 # Size of erode/dilate mask in millimeter
+      kern <- makeBrush(max(1,round(maskSize/pixelLengthScale)), shape= 'Gaussian', sigma=10) # 5 for "normal images" scale 0.75
       
-      kern <- makeBrush(min(1,round(3.75/pixelLengthScale)), shape= 'disc') # 5 for "normal images" scale 0.75
+      img_denoised <- normalize(opening(img_original*scale, kern))
       
-      img_blurred <- normalize(opening(img_original, kern))
-      img_thresholded <- img_blurred > otsu(img_blurred) # Otsu??s threshold 
-      img_segmented <- fillHull(bwlabel(img_thresholded))
+      otsu <- otsu(img_denoised)
+      thresholdStepSize <- 0.2
+      thresholds <- seq(otsu, 1, by=thresholdStepSize) # hopefully the first one is good, but never now...
+      if (otsu > thresholdStepSize) { thresholds <- c(thresholds, seq(otsu-thresholdStepSize, 0, by=-thresholdStepSize)) }
       
-      # Get segment meta data and select only the segments within the ROI
-      segmentInfo <- cbind(imgMetaData[i,],
-                           data.frame(computeFeatures.moment(img_segmented)),
-                           data.frame(computeFeatures.shape(img_segmented)))
-      distToROI <- sqrt((segmentInfo$m.cx - roi$m.cx)^2 + (segmentInfo$m.cy - roi$m.cy)^2)
+      thresholdIndex <- 0
+      doneThresholding <- F
+      while (!doneThresholding & (thresholdIndex < length(thresholds))) {
+        thresholdIndex <- thresholdIndex + 1
+        currentThreshold <- thresholds[thresholdIndex]
+        if (thresholdIndex > 1) {
+          cat("Re-thresholding",imgMetaData$FileName[i],"#",thresholdIndex,"at",currentThreshold,fill=T)
+        }
+        
+        img_thresholded <- img_denoised > currentThreshold
+        img_segmented <- fillHull(bwlabel(img_thresholded))
+        
+        # Get segment meta data and select only the segments within the ROI
+        segmentInfo <- cbind(imgMetaData[i,],
+                             data.frame(computeFeatures.moment(img_segmented)),
+                             data.frame(computeFeatures.shape(img_segmented)))
+        distToROI <- sqrt((segmentInfo$m.cx - roi$m.cx)^2 + (segmentInfo$m.cy - roi$m.cy)^2)
+        
+        segmentInfo$segIndex <- seq(nrow(segmentInfo))
+        segmentInfo$UUID  <- sapply(1:nrow(segmentInfo),UUIDgenerate) # unique ID for each segment
+        
+        segmentInfo$ROI.x <- round(roi$m.cx)
+        segmentInfo$ROI.y <- round(roi$m.cy)
+        segmentInfo$ROI.r <- round(roi$radius)
+        
+        # Only keep segments inside the ROI
+        minSegmentArea <- 10 # Minimum segment size in square mm
+        segmentInfo <- filter(segmentInfo, distToROI < roi$radius, s.area > minSegmentArea/pixelAreaScale)
+        img_colourSegs <- colorLabels(rmObjects(img_segmented, 
+                                                setdiff(seq(max(img_segmented)),segmentInfo$segIndex)))
+        
+        # assume a good segmentation has at least 1 segment
+        if (nrow(segmentInfo) >= 1) { doneThresholding <- T}
+        
+        if (is.null(prevROI)) {
+          img_comb <- EBImage::combine(drawCircle(img_colourSegs, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
+                                       drawCircle(toRGB(img_original), x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
+                                       toRGB(img_roi_subtracted),
+                                       #toRGB(normalize(img_masked)),
+                                       toRGB(img_denoised),
+                                       toRGB(img_thresholded),
+                                       toRGB(img_roi))
+        } else {
+          img_comb <- EBImage::combine(drawCircle(img_colourSegs, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
+                                       drawCircle(toRGB(img_original), x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
+                                       toRGB(img_denoised),
+                                       toRGB(img_thresholded))
+        }
+        display(img_comb,all=T,method="raster")
+        text(10,20,imgMetaData$FileName[i],col="yellow",pos=4)
       
-      segmentInfo$segIndex <- seq(nrow(segmentInfo))
-      segmentInfo$UUID  <- sapply(1:nrow(segmentInfo),UUIDgenerate) # unique ID for each segment
-      
-      segmentInfo$ROI.x <- round(roi$m.cx)
-      segmentInfo$ROI.y <- round(roi$m.cy)
-      segmentInfo$ROI.r <- round(roi$radius)
-      
-      # Only keep segments inside the ROI
-      segmentInfo <- filter(segmentInfo, distToROI < roi$radius)
-      img_colourSegs <- colorLabels(rmObjects(img_segmented, 
-                                              setdiff(seq(max(img_segmented)),segmentInfo$segIndex)))
-      
-      if (is.null(prevROI)) {
-        img_comb <- EBImage::combine(drawCircle(img_colourSegs, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
-                                     drawCircle(toRGB(img_original), x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
-                                     toRGB(img_roi_subtracted),
-                                     #toRGB(normalize(img_masked)),
-                                     toRGB(img_blurred),
-                                     toRGB(img_thresholded),
-                                     toRGB(img_roi))
-      } else {
-        img_comb <- EBImage::combine(drawCircle(img_colourSegs, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
-                                     drawCircle(toRGB(img_original), x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
-                                     toRGB(img_blurred),
-                                     toRGB(img_thresholded))
       }
-      display(img_comb,all=T,method="raster")
-      text(10,20,imgMetaData$FileName[i],col="yellow",pos=4)
+      
+      if (nrow(segmentInfo) > 0) {
+        dirName <- paste("segmented",segmentInfo$Dataset[1], segmentInfo$Id[1], segmentInfo$Slice[1],sep="/")
+        dir.create(dirName, showWarnings = F, recursive = T)
+        fName <- paste(dirName,
+                       paste(
+                         paste("SEG", segmentInfo$Offset[1], segmentInfo$Time[1], sep="-"), 
+                         ".png", 
+                         sep=""), 
+                       sep="/")
+        writeImage(img_colourSegs, fName)
+      }
       
       if (is.null(sliceSegmentation)) {
         sliceSegmentation <- segmentInfo
