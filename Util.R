@@ -41,15 +41,6 @@ readInteger <- function(p = "Enter an integer: ")
   return(as.integer(n))
 }
 
-# getAllDatasetFolders <- function() {
-#   f <- c('train','validate','test')
-#   f[sapply(paste("data",f,sep="/"),dir.exists)]
-# }
-
-## TODO: clean up both of these - should be obsolete
-# datasetFolders <- c('train','validate','test')
-# datasetFoldersForSegmentDetection <- c('train','validate')
-
 # create mid-ordered sequence
 midOrderSeq <- function(n) {
   abs(n %/% 2 + 1 - seq(n))*2 - ((1+sign(n %/% 2 + 1 - seq(n)))%/%2) + 1
@@ -73,21 +64,6 @@ getImageFile <- function(ds) {
   paste("data",unique(ds$FileName),sep="/")
 }
 
-# getImageFolder <- function(entry) {
-#   paste("data",
-#         entry$Dataset,
-#         entry$Id,
-#         "study",
-#         paste(entry$ImgType, entry$Slice, sep="_"),
-#         sep="/")  
-# }
-# 
-# getImageFile <- function(entry) {
-#   paste(getImageFolder(entry), 
-#         paste("IM-",sprintf("%04d",entry$Offset),"-",sprintf("%04d",entry$Time),".dcm",sep=""),
-#         sep="/")
-# }
-
 # Plot interesting attributes over time for one slice
 plotSlice <- function(slice) {
   plotData <- mutate(slice, 
@@ -95,7 +71,7 @@ plotSlice <- function(slice) {
                      area.radius.max = pi*radius.max^2,
                      area.radius.min = pi*radius.min^2) %>% 
     gather(metric, area, starts_with("area"))
-  if (nrow(slice) > 1) {
+  if (nrow(slice) > 1 & any(!is.na(plotData$area))) {
     print(ggplot(plotData, aes(x=Time, y=area, colour=metric))+geom_line()+geom_point()+
             ggtitle(paste("Segment area over Time for ID",
                           unique(slice$Id),"Slice",unique(slice$Slice))))
@@ -199,6 +175,16 @@ createSegmentPredictSet <- function(ds)
   # Keep only numerics plus the outcome (logic)
   ds <- ds[,sapply(ds, function(c) { return (is.numeric(c) | is.logical(c)) }),with=F] # keep only numerics
   
+  # ID slice img   seg x/y <segment details>
+  #
+  #  1     1   1   0.1 0.2   0.5 0.6 
+  #  1     1   1   0.2 0.3   0.3 0.7
+  #  1     1   1   0.3 0.4   0.4 0.2 
+  #
+  #  1     1   2   0.1 0.2   0.5 0.6 
+  #  1     1   2   0.2 0.3   0.3 0.7
+  #  1     1   2   0.3 0.4   0.4 0.2 
+  
   # TODO: add difficult aggregates over other images for the same slice
   
   return (ds[,sort(names(ds)),with=F])
@@ -236,3 +222,14 @@ createImagePredictSet <- function(ds)
   
   return (ds[,sort(names(ds)),with=F])
 }
+
+getSegmentedImageDir <- function(ds)
+{
+  paste("segmented",ds$Dataset, ds$Id, ds$Slice,sep="/")
+}
+
+getSegmentedImageFile <- function(ds, dirName = getSegmentedImageDir(ds))
+{
+  paste(dirName,paste(paste("SEG", ds$Offset, ds$Time, sep="-"), ".png", sep=""), sep="/")
+}
+

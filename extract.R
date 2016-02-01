@@ -134,7 +134,7 @@ segmentImagesForOneSlice <- function(imgMetaData, prevROI=NULL) {
         if (nrow(segmentInfo) >= 1) { doneThresholding <- T}
         
         if (is.null(prevROI)) {
-          img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(img_original))/2, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
+          img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
                                        drawCircle(toRGB(img_original), x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
                                        toRGB(img_roi_subtracted),
                                        #toRGB(normalize(img_masked)),
@@ -142,7 +142,7 @@ segmentImagesForOneSlice <- function(imgMetaData, prevROI=NULL) {
                                        toRGB(img_thresholded),
                                        toRGB(img_roi))
         } else {
-          img_comb <- EBImage::combine(drawCircle(img_colourSegs, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
+          img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
                                        drawCircle(toRGB(img_original), x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
                                        toRGB(img_denoised),
                                        toRGB(img_thresholded))
@@ -153,14 +153,9 @@ segmentImagesForOneSlice <- function(imgMetaData, prevROI=NULL) {
       }
       
       if (nrow(segmentInfo) > 0) {
-        dirName <- paste("segmented",segmentInfo$Dataset[1], segmentInfo$Id[1], segmentInfo$Slice[1],sep="/")
+        dirName <- getSegmentedImageDir(segmentInfo[1,])
         dir.create(dirName, showWarnings = F, recursive = T)
-        fName <- paste(dirName,
-                       paste(
-                         paste("SEG", segmentInfo$Offset[1], segmentInfo$Time[1], sep="-"), 
-                         ".png", 
-                         sep=""), 
-                       sep="/")
+        fName <- getSegmentedImageFile(segmentInfo[1,], dirName)
         writeImage(img_colourSegs, fName)
       }
       

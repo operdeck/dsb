@@ -1,4 +1,4 @@
-# Manual identification of LV segments with the purpose of creating a prediction dataset
+ # Manual identification of LV segments with the purpose of creating a prediction dataset
 # to do this automatically on the full dataset. 
 # Creates "segments-predict.csv" with same data for only the (correctly) identified segments of
 # each file / slice / Id.
@@ -47,15 +47,24 @@ showSingleImage <- function(segments) {
     img <- rotate(img,-90)
   }
   for (j in 1:nrow(segments)) {
-    radii <- c(segments$s.radius.mean[j], segments$s.radius.min[j], segments$s.radius.max[j])
+    radii <- c(segments$s.radius.mean[j], segments$s.radius.mean[j]+1,
+               segments$s.radius.min[j], segments$s.radius.max[j])
     for (k in seq(length(radii))) {
       if (radii[k] >= 1) {
         img <- drawCircle(toRGB(img), 
-                          x=segments$m.cx[j], y=segments$m.cy[j], radii[k], col=ifelse(k==1,"red","orange"))
+                          x=segments$m.cx[j], y=segments$m.cy[j], radii[k], 
+                          col=ifelse(k<=2,"red","orange"))
       }
     }
   }
-  EBImage::display(img,all=T,method="raster")
+  segFile <- getSegmentedImageFile(segments[1,])
+  if (file.exists(segFile)) {
+    segImg <- readImage(segFile)
+    EBImage::display(EBImage::combine(img,
+                                      (segImg+img)/2),all=T,method="raster")
+  } else {
+    EBImage::display(img,all=T,method="raster")
+  }
   text(10,20,getImageFile(segments),col="yellow",pos=4)
   showSegmentLabels(segments)
 }
@@ -74,13 +83,21 @@ showAllSliceImages <- function(slice) {
     seg <- which(slice$Time == t & slice$isLV)
     #print(slice[seg,])
     
-    radii <- c(slice$s.radius.mean[seg], slice$s.radius.min[seg], slice$s.radius.max[seg])
+    segFile <- getSegmentedImageFile(slice[which(slice$Time == t)[1],])
+    if (file.exists(segFile)) {
+      segImg <- readImage(segFile)
+      img <- (toRGB(img)+segImg)/2
+    }
+
+    radii <- c(slice$s.radius.mean[seg], slice$s.radius.mean[seg]+1, slice$s.radius.min[seg], slice$s.radius.max[seg])
     for (k in seq(length(radii))) {
       if (radii[k] >= 1) {
         img <- drawCircle(toRGB(img), 
-                          x=slice$m.cx[seg], y=slice$m.cy[seg], radii[k], col=ifelse(k==1,"red","orange"))
+                          x=slice$m.cx[seg], y=slice$m.cy[seg], radii[k], 
+                          col=ifelse(k<=2,"red","orange"))
       }
     }
+    
     imgz[[f]] <- img
   }
   EBImage::display(EBImage::combine(imgz),all=T,method="raster")

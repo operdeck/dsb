@@ -3,11 +3,6 @@
 # aggregates the segment data to have one set of meta-info per ID. Combines this with the 
 # train set to create a model for the Systole and Diastole volumes.
 
-# TODO: with image dimension x/y added we could scale the areas with
-# sum(area all segments)/area(whole image). Linear attributes could be
-# scaled with the square of this. Poor man's approximation of 
-# Voronoi segmentation. Image dimension x/y might be part of slice meta data.
-
 # Volume = sum over slices *for a certain Time*
 # Group by time:
 #   Sum area(t) over slices (take scale and distance into account)
@@ -81,8 +76,8 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   
   # For the others, find the best segment match per each Id/Slice/Time
   # TODO: not sure what happens if none of the UUID's match
-  newSegmentationOldClassification <- filter(segClassificationSet, is.na(Dataset))
-  segClassificationSet <- filter(segClassificationSet, !is.na(Dataset))
+  newSegmentationOldClassification <- filter(segClassificationSet, is.na(m.cx))
+  segClassificationSet <- filter(segClassificationSet, !is.na(m.cx))
   
   if (nrow(newSegmentationOldClassification) > 0) {
     classifiedSegmentsOlder <- left_join(select(newSegmentationOldClassification, Id, Slice, Time, UUID, isLV),
@@ -104,9 +99,9 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
       if (!(prevId == classifiedImagesOlder$Id[i] & prevSlice == classifiedImagesOlder$Slice[i])) {
         cat("Matching existing classification to new segmentation for Id", classifiedImagesOlder$Id[i], 
             "Slice", classifiedImagesOlder$Slice[i], 
-            "# images", nrow(filter(classifiedImagesOlder, Id == classifiedImagesOlder$Id[i], Slice == classifiedImagesOlder$Slice[i])), 
-            "candidates:", nrow(candidateSegments), 
-            "classified:", nrow(lv), fill=T)
+            "#img", nrow(filter(classifiedImagesOlder, Id == classifiedImagesOlder$Id[i], Slice == classifiedImagesOlder$Slice[i])), 
+            "#segs:", nrow(candidateSegments), 
+            "==>", nrow(lv), fill=T)
         prevId <- classifiedImagesOlder$Id[i]
         prevSlice <- classifiedImagesOlder$Slice[i]
       }
@@ -135,8 +130,10 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   cat("   number of Images:",nrow(unique(select(segClassificationSet,Id,Slice,Time))),"with identified LV",nrow(unique(select(filter(segClassificationSet,isLV),Id,Slice,Time))),fill=T)
   
   # Build up prediction set by creating derived variables and dropping non-predictors
-  segClassificationSetIDs <- select(segClassificationSet, Id, Dataset, Slice, Time)
-  segClassificationSet <- createSegmentPredictSet(filter(segClassificationSet, !is.na(isLV)))
+  segClassificationSetIDs <- select(segClassificationSet, Id, Slice, Time)
+  segClassificationSet <- createSegmentPredictSet(filter(left_join(segClassificationSet, 
+                                                                   imageList, by=c("Id","Slice","Time")), 
+                                                         !is.na(isLV)))
   
   # quick plots to verify results
   
@@ -164,7 +161,7 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   #                       -m.cx, -m.cy, -distToROI)
   
   valSet <- sample.int(nrow(segClassificationSet), validationPercentage*nrow(segClassificationSet))
-  trainDataPredictorsOnly <- select(segClassificationSet, -isLV, -isProcessed, -distToROI) # NB: isProcessed/distToROI shouldnt be here anymore...
+  trainDataPredictorsOnly <- select(segClassificationSet, -isLV)
   
   cat("Building segment model with",length(names(trainDataPredictorsOnly)),"predictors",fill=T)
   
@@ -183,7 +180,8 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   leftVentricleSegmentModel <- xgboost(data = data.matrix(trainDataPredictorsOnly[-valSet]), 
                                        label = segClassificationSet$isLV[-valSet], 
                                        max.depth = 2, eta = 0.1, nround = 100,
-                                       objective = "binary:logistic", missing=NaN, verbose=0)
+                                       objective = "binary:logistic", 
+                                       missing=NaN, verbose=0)
   imp_matrix <- xgb.importance(feature_names = names(trainDataPredictorsOnly), model = leftVentricleSegmentModel)
   print(xgb.plot.importance(importance_matrix = imp_matrix))
   
@@ -210,10 +208,13 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   # Apply on full dataset
   cat("Apply segment model to", nrow(allSegments), "segments", fill=T)
   allSegments$pLV <- predict(leftVentricleSegmentModel, 
-                             data.matrix(createSegmentPredictSet(select(allSegments, -distToROI, -isProcessed))))
+                             data.matrix(createSegmentPredictSet(
+                               left_join(allSegments, 
+                                         imageList, by=c("Id","Slice","Time")))),
+                             missing=NaN)
   
   # Keep data if we want to skip the segmentation predict phase
-  allSegments <- select(allSegments, -FileName, -isProcessed, -UUID, -distToROI) # maybe even more...
+  allSegments <- select(allSegments, -UUID)
   write.csv(allSegments, imagePredictFile, row.names=F)
 }
 
@@ -222,13 +223,11 @@ allSegments <- filter(allSegments, pLV > pSegmentThreshold)
 print(qplot(allSegments$pLV))
 
 # Keep only the segments with max pLV for each image
-allSegments[, isLV := segIndex == segIndex[which.max(pLV)], by=c("Dataset","Id","Slice","Time")]
+allSegments[, isLV := segIndex == segIndex[which.max(pLV)], by=c("Id","Slice","Time")]
 imageData <- createImagePredictSet(left_join(imageList, 
-                                             select(filter(allSegments, isLV, SliceOrder <= 2), 
-                                                    -Offset, -SliceCount, -SliceIndex, -SliceOrder,
-                                                    -PixelSpacing.x, -PixelSpacing.y, 
-                                                    -SliceLocation, -SliceThickness),
-                                             by=c("Dataset", "Id", "ImgType", "Slice", "Time")))
+                                             filter(allSegments, isLV),
+                                             by=c("Id", "Slice", "Time")))
+# Only keeping the images for the middle slices
 cat("Total",nrow(imageData),"images, of which",nrow(filter(imageData,isLV)),"have a detected LV",fill=T)
 
 pLeftVentricle <- cut(imageData$pLV,10)
@@ -236,6 +235,8 @@ pLeftVentricle <- cut(imageData$pLV,10)
 print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_bar()+
         ggtitle("LV Probability vs Slice Order") +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
+
+imageData <- filter(imageData, SliceOrder <= 2)
 
 #
 # Plot some graphs
@@ -246,9 +247,11 @@ plotIds <- sample(unique(imageData$Id),10)
 
 # For one Slice: plot area vs Time
 for (i in seq(length(plotIds))) {
-  plotSlice(filter(imageData, Id==plotIds[i], SliceOrder==1))
+  ds <- filter(imageData, Id==plotIds[i])
+  for (slice in unique(ds$Slice)) {
+    plotSlice(ds[Slice == slice,])
+  }
 }
-
 
 # # For one Time: plot area vs Slice
 # for (plotId in plotIds) {
