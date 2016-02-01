@@ -3,6 +3,9 @@
 # Creates "segments-predict.csv" with same data for only the (correctly) identified segments of
 # each file / slice / Id.
 
+# TODO if segment picture is available, show that next to the base one,
+# overlay with original
+
 source("util.R")
 
 gc()
@@ -87,6 +90,9 @@ showAllSliceImages <- function(slice) {
 # Build (simple) segment prediction model and apply to test set
 createSegmentModelAndApply <- function(train, test)
 {
+  cat("LV model built out of", sum(complete.cases(train)), 
+      "complete cases from total",nrow(train),fill=T)
+  train <- train[complete.cases(train),]
   preds <- rep(1.0/nrow(test), nrow(test))
   if(is.null(train) || nrow(train) < 10000) {
     return (preds)
@@ -101,6 +107,7 @@ createSegmentModelAndApply <- function(train, test)
   test <- createSegmentPredictSet(test)
   
   leftVentricleSegmentModel <- xgboost(data = data.matrix(select(train, -isLV)),
+                                       missing=NaN,
                                        label = train$isLV, 
                                        max.depth = 4, eta = 0.1, nround = 100,
                                        objective = "binary:logistic", verbose=0)
@@ -108,7 +115,7 @@ createSegmentModelAndApply <- function(train, test)
   imp_matrix <- xgb.importance(feature_names = names(select(train, -isLV)), model = leftVentricleSegmentModel)
   print(xgb.plot.importance(importance_matrix = imp_matrix))
   
-  probLV <- predict(leftVentricleSegmentModel, data.matrix(test)) #, missing=NaN)
+  probLV <- predict(leftVentricleSegmentModel, data.matrix(test), missing=NaN) #, missing=NaN)
   names(probLV) <- segments
   
   return (probLV)
@@ -163,7 +170,7 @@ for (sliceIndex in seq(nrow(promptSlices))) {
   }
   # Create simple segment model and predict pLV on whole slice here
   slice$pLV <- createSegmentModelAndApply(segPredictSet, slice)
-  
+
   # list of images in this slice that need processing
   unProcessedImageIndices <- unique(slice$Time)
   while (length(unProcessedImageIndices) > 0) {

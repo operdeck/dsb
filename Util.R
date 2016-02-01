@@ -196,6 +196,9 @@ createSegmentPredictSet <- function(ds)
            #-distToROI,              # position dependent - not available always
            -Offset)                 # slice location is the better predictor
   
+  # Keep only numerics plus the outcome (logic)
+  ds <- ds[,sapply(ds, function(c) { return (is.numeric(c) | is.logical(c)) }),with=F] # keep only numerics
+  
   # TODO: add difficult aggregates over other images for the same slice
   
   return (ds[,sort(names(ds)),with=F])

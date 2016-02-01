@@ -134,7 +134,7 @@ segmentImagesForOneSlice <- function(imgMetaData, prevROI=NULL) {
         if (nrow(segmentInfo) >= 1) { doneThresholding <- T}
         
         if (is.null(prevROI)) {
-          img_comb <- EBImage::combine(drawCircle(img_colourSegs, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
+          img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(img_original))/2, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
                                        drawCircle(toRGB(img_original), x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
                                        toRGB(img_roi_subtracted),
                                        #toRGB(normalize(img_masked)),
