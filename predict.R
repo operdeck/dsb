@@ -236,7 +236,7 @@ print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_b
         ggtitle("LV Probability vs Slice Order") +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
-imageData <- filter(imageData, SliceOrder <= 2)
+# imageData <- filter(imageData, SliceOrder <= 2)
 
 #
 # Plot some graphs
@@ -253,25 +253,39 @@ for (i in seq(length(plotIds))) {
   }
 }
 
-# # For one Time: plot area vs Slice
-# for (plotId in plotIds) {
-#   slice <- na.omit(filter(imageData, Id==plotId))
-#   for (t in unique(slice$Time)) {
-#     slice <- na.omit(filter(imageData, Id==plotId, Time==t))
-#     plotData <- mutate(slice, 
-#                        area.radius.mean = pi*radius.mean^2,
-#                        area.radius.max = pi*radius.max^2,
-#                        area.radius.min = pi*radius.min^2) %>% 
-#       gather(metric, area, starts_with("area"))
-#     if (nrow(slice) > 1) {
-#       print(ggplot(plotData, aes(x=SliceLocation, y=area, colour=metric))+geom_line()+geom_point()+
-#               ggtitle(paste("Segment area over Slice for ID",
-#                             unique(slice$Id),"Time",unique(slice$Time))))
-#     } else {
-#       cat("No image with identified LV at all for Time:", unique(slice$Id), unique(slice$Time), fill=T)
-#     }
-#   }  
-# }
+# maybe interpolate and create
+# ID, Slice, Time ==> area
+# with > 25% missing skip?
+# could be used to fill missing 'area' gaps in imageList but does not remove outliers
+s <- 30
+ds1 <- ds[Slice == s]
+ds2 <- na.omit(ds1)
+ggplot(ds1, aes(Time, area))+geom_line()
+# interp <- smooth.spline(ds2$Time,ds2$area)
+# qplot(interp$x, interp$y)+geom_line()
+qplot(ds1$Time,predict(loess(area~Time,ds2),newdata=ds1$Time))
+
+stop()
+
+# For one Time: plot area vs Slice
+for (plotId in plotIds) {
+  slice <- na.omit(filter(imageData, Id==plotId))
+  for (t in unique(slice$Time)) {
+    slice <- na.omit(filter(imageData, Id==plotId, Time==t))
+    if (nrow(slice) > 1) {
+      plotData <- mutate(slice
+                         ,area.radius.mean = pi*radius.mean^2
+                         ,area.radius.max = pi*radius.max^2
+                         ,area.radius.min = pi*radius.min^2) %>% 
+        gather(metric, area, starts_with("area"))
+      print(ggplot(plotData, aes(x=SliceLocation, y=area, colour=metric))+geom_line()+geom_point()+
+              ggtitle(paste("Segment area over Slice for ID",
+                            unique(slice$Id),"Time",unique(slice$Time))))
+    } else {
+      cat("No image with identified LV at all for Time:", unique(slice$Id), unique(slice$Time), fill=T)
+    }
+  }  
+}
 
 # Aggregate up to Time level
 #sliceList <- getSliceList(playlist=imageList)
