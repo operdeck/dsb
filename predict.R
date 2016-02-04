@@ -17,7 +17,13 @@ source("util.R")
 
 library(caret)
 library(pROC)
+library(lattice)
+require(caret)
+library(DMwR) # outlier detection
 
+# source("https://bioconductor.org/biocLite.R")
+# biocLite("impute"
+         
 # Threshold for LV segment probability
 pSegmentThreshold <- 0.2
 
@@ -236,14 +242,63 @@ print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_b
         ggtitle("LV Probability vs Slice Order") +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
+# We'll plot results for some randomly chose Ids
+plotIds <- sample(unique(imageData$Id),10)
+for (plotId in plotIds) {
+  print(plotId)
+  
+  # Single ID
+  #data3D <- select(imageData[Id == plotId,], Time, Slice, SliceLocation, area) %>% arrange(Time)
+  data3D <- imageData[Id == plotId,]
+  data3D <- data3D[,sapply(data3D, is.numeric),with=F]
+  
+  # View raw data - with missing and outliers
+  
+  print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100), main=paste("Raw Id=",plotId)))
+  
+  # Outliers removal
+  similarityData <- select(data3D, Slice, Time, area) # TODO...more!
+  outlier.scores <- lofactor(scale(similarityData[which(complete.cases(similarityData))]), k=5)
+  #plot(density(outlier.scores))
+  outliers <- which(complete.cases(similarityData))[which(outlier.scores > 1.2)]
+  cat("Outliers:",outliers,fill=T)
+  
+  data3D$area[outliers] <- NA
+  
+  print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100), main=paste("Outliers Removed Id=",plotId)))
+  
+  # Missing imputation
+  
+  # this effectively smoothed and imputes
+  # should we help bagging and add some 'shifted' rows of area data?
+  # only set the missing values, not all
+  # kNN doesnt work when there are too many missings
+  data3D <- predict(preProcess(data3D, method="bagImpute"),newdata=data3D)
+
+  print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100), main=paste("Missings Imputed Id=",plotId)))
+}
+stop()
+
+# mx <- mx[rank(mx$SliceLocation)]
+# y <- mx$SliceLocation
+# x <- unique(data3D$Time)
+# z <- as.matrix(select(mx, -Slice, -SliceLocation))
+# persp3d(x=seq(nrow(z)),y=seq(ncol(z)),z,col="blue",aspect="iso") #bg3d
+
+f <- aregImpute(~ area+Slice+SliceLocation+Time, data=data3D)
+data3D$area <- f$imputed$area
+wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100))
+# smooth...
+
+mx <- spread(data3D, Time, area)
+
+stop()
+
 # imageData <- filter(imageData, SliceOrder <= 2)
 
 #
 # Plot some graphs
 #
-
-# We'll plot results for some randomly chose Ids
-plotIds <- sample(unique(imageData$Id),10)
 
 # For one Slice: plot area vs Time
 for (i in seq(length(plotIds))) {
