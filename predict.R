@@ -39,7 +39,7 @@ print("Reading segmentation")
 imagePredictFile <- "allSegments-segmentsPredicted.csv"
 segmentPredictFile <- "segmentTrainSet.csv"
 
-skipSegmentPrediction <- T
+skipSegmentPrediction <- F
 
 if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   # Keep data if we want to skip the segmentation predict phase

@@ -212,7 +212,7 @@ imageList$Random <- runif(max(imageList$Id))[imageList$Id] # keep ID's together
 
 # imageList$SpecialOrder <- ifelse(imageList$SliceOrder > 1, imageList$SliceOrder, 10) # first last - temporary
 
-imageList <- arrange(imageList, isProcessed, SliceOrder, Dataset, Random) %>% select(-Random)
+imageList <- arrange(imageList, isProcessed, -SliceOrder, Dataset, Random) %>% select(-Random)
 
 # Process images per slice. Image of the same slice (usually) have same dimensions, location etc
 
