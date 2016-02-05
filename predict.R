@@ -45,7 +45,7 @@ print("Reading segmentation")
 imagePredictFile <- "allSegments-segmentsPredicted.csv"
 segmentPredictFile <- "segmentTrainSet.csv"
 
-skipSegmentPrediction <- F
+skipSegmentPrediction <- T
 
 if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   # Keep data if we want to skip the segmentation predict phase
@@ -177,6 +177,7 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
                                    train=sapply(trainDataPredictorsOnly, 
                                                 function(p) {auc(segClassificationSet$isLV[-valSet], p[-valSet])}))
   uniVariateAnalysis <- gather(uniVariateAnalysis, dataset, auc, -Predictor)
+  uniVariateAnalysis$Predictor <- factor(uniVariateAnalysis$Predictor, levels=arrange(uniVariateAnalysis,-auc)$Predictor)
   print(ggplot(uniVariateAnalysis, aes(x=Predictor, y=auc, fill=dataset))+
           geom_bar(stat="identity",position="dodge")+
           theme(axis.text.x = element_text(angle = 45, hjust=1))+
@@ -244,6 +245,10 @@ print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_b
 
 # We'll plot results for some randomly chose Ids
 plotIds <- sample(unique(imageData$Id),10)
+# TODO - scale plots
+# - predict with much smaller set
+# - fold back to imageData
+# - also find outliers in time direction?
 for (plotId in plotIds) {
   print(plotId)
   
@@ -256,16 +261,28 @@ for (plotId in plotIds) {
   
   print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100), main=paste("Raw Id=",plotId)))
   
-  # Outliers removal
-  similarityData <- select(data3D, Slice, Time, area) # TODO...more!
-  outlier.scores <- lofactor(scale(similarityData[which(complete.cases(similarityData))]), k=5)
-  #plot(density(outlier.scores))
-  outliers <- which(complete.cases(similarityData))[which(outlier.scores > 1.2)]
-  cat("Outliers:",outliers,fill=T)
+  # Outliers removal per slice
+  similarityData <- select(data3D, Slice, Time, area)
+  nOutliers <- 0
+  for (t in unique(similarityData$Time)) {
+    d <- similarityData[Time==t]$area
+    if (sum(!is.na(d)) > 3) {
+      outliers <- which(!is.na(d))[which(lofactor(na.omit(d), k=3) > 2.0)]
+      nOutliers <- nOutliers + length(outliers)
+      outlierSlices <- similarityData[Time==t]$Slice[outliers]
+      data3D[Time==t & Slice %in% outlierSlices, area := NA]
+    }
+  }
+  cat(nOutliers, "outliers by slice for Id", plotId, fill=T)
   
-  data3D$area[outliers] <- NA
+#   outlier.scores <- lofactor(scale(similarityData[which(complete.cases(similarityData))]), k=5)
+#   #plot(density(outlier.scores))
+#   outliers <- which(complete.cases(similarityData))[which(outlier.scores > 1.2)]
+#   cat("Outliers:",outliers,fill=T)
+#   data3D$area[outliers] <- NA
   
-  print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100), main=paste("Outliers Removed Id=",plotId)))
+  print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,
+                  col.regions = terrain.colors(100), main=paste("Outliers Removed Id=",plotId)))
   
   # Missing imputation
   
@@ -273,7 +290,8 @@ for (plotId in plotIds) {
   # should we help bagging and add some 'shifted' rows of area data?
   # only set the missing values, not all
   # kNN doesnt work when there are too many missings
-  data3D <- predict(preProcess(data3D, method="bagImpute"),newdata=data3D)
+  preds <- predict(preProcess(data3D, method="bagImpute"),newdata=data3D)
+  data3D$area <- ifelse(is.na(data3D$area), preds$area, data3D$area)
 
   print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100), main=paste("Missings Imputed Id=",plotId)))
 }
@@ -285,14 +303,14 @@ stop()
 # z <- as.matrix(select(mx, -Slice, -SliceLocation))
 # persp3d(x=seq(nrow(z)),y=seq(ncol(z)),z,col="blue",aspect="iso") #bg3d
 
-f <- aregImpute(~ area+Slice+SliceLocation+Time, data=data3D)
-data3D$area <- f$imputed$area
-wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100))
-# smooth...
-
-mx <- spread(data3D, Time, area)
-
-stop()
+# f <- aregImpute(~ area+Slice+SliceLocation+Time, data=data3D)
+# data3D$area <- f$imputed$area
+# wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100))
+# # smooth...
+# 
+# mx <- spread(data3D, Time, area)
+# 
+# stop()
 
 # imageData <- filter(imageData, SliceOrder <= 2)
 
