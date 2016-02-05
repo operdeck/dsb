@@ -17,7 +17,13 @@ source("util.R")
 
 library(caret)
 library(pROC)
+library(lattice)
+require(caret)
+library(DMwR) # outlier detection
 
+# source("https://bioconductor.org/biocLite.R")
+# biocLite("impute"
+         
 # Threshold for LV segment probability
 pSegmentThreshold <- 0.2
 
@@ -236,14 +242,63 @@ print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_b
         ggtitle("LV Probability vs Slice Order") +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
-imageData <- filter(imageData, SliceOrder <= 2)
+# We'll plot results for some randomly chose Ids
+plotIds <- sample(unique(imageData$Id),10)
+for (plotId in plotIds) {
+  print(plotId)
+  
+  # Single ID
+  #data3D <- select(imageData[Id == plotId,], Time, Slice, SliceLocation, area) %>% arrange(Time)
+  data3D <- imageData[Id == plotId,]
+  data3D <- data3D[,sapply(data3D, is.numeric),with=F]
+  
+  # View raw data - with missing and outliers
+  
+  print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100), main=paste("Raw Id=",plotId)))
+  
+  # Outliers removal
+  similarityData <- select(data3D, Slice, Time, area) # TODO...more!
+  outlier.scores <- lofactor(scale(similarityData[which(complete.cases(similarityData))]), k=5)
+  #plot(density(outlier.scores))
+  outliers <- which(complete.cases(similarityData))[which(outlier.scores > 1.2)]
+  cat("Outliers:",outliers,fill=T)
+  
+  data3D$area[outliers] <- NA
+  
+  print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100), main=paste("Outliers Removed Id=",plotId)))
+  
+  # Missing imputation
+  
+  # this effectively smoothed and imputes
+  # should we help bagging and add some 'shifted' rows of area data?
+  # only set the missing values, not all
+  # kNN doesnt work when there are too many missings
+  data3D <- predict(preProcess(data3D, method="bagImpute"),newdata=data3D)
+
+  print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100), main=paste("Missings Imputed Id=",plotId)))
+}
+stop()
+
+# mx <- mx[rank(mx$SliceLocation)]
+# y <- mx$SliceLocation
+# x <- unique(data3D$Time)
+# z <- as.matrix(select(mx, -Slice, -SliceLocation))
+# persp3d(x=seq(nrow(z)),y=seq(ncol(z)),z,col="blue",aspect="iso") #bg3d
+
+f <- aregImpute(~ area+Slice+SliceLocation+Time, data=data3D)
+data3D$area <- f$imputed$area
+wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100))
+# smooth...
+
+mx <- spread(data3D, Time, area)
+
+stop()
+
+# imageData <- filter(imageData, SliceOrder <= 2)
 
 #
 # Plot some graphs
 #
-
-# We'll plot results for some randomly chose Ids
-plotIds <- sample(unique(imageData$Id),10)
 
 # For one Slice: plot area vs Time
 for (i in seq(length(plotIds))) {
@@ -253,25 +308,39 @@ for (i in seq(length(plotIds))) {
   }
 }
 
-# # For one Time: plot area vs Slice
-# for (plotId in plotIds) {
-#   slice <- na.omit(filter(imageData, Id==plotId))
-#   for (t in unique(slice$Time)) {
-#     slice <- na.omit(filter(imageData, Id==plotId, Time==t))
-#     plotData <- mutate(slice, 
-#                        area.radius.mean = pi*radius.mean^2,
-#                        area.radius.max = pi*radius.max^2,
-#                        area.radius.min = pi*radius.min^2) %>% 
-#       gather(metric, area, starts_with("area"))
-#     if (nrow(slice) > 1) {
-#       print(ggplot(plotData, aes(x=SliceLocation, y=area, colour=metric))+geom_line()+geom_point()+
-#               ggtitle(paste("Segment area over Slice for ID",
-#                             unique(slice$Id),"Time",unique(slice$Time))))
-#     } else {
-#       cat("No image with identified LV at all for Time:", unique(slice$Id), unique(slice$Time), fill=T)
-#     }
-#   }  
-# }
+# maybe interpolate and create
+# ID, Slice, Time ==> area
+# with > 25% missing skip?
+# could be used to fill missing 'area' gaps in imageList but does not remove outliers
+s <- 30
+ds1 <- ds[Slice == s]
+ds2 <- na.omit(ds1)
+ggplot(ds1, aes(Time, area))+geom_line()
+# interp <- smooth.spline(ds2$Time,ds2$area)
+# qplot(interp$x, interp$y)+geom_line()
+qplot(ds1$Time,predict(loess(area~Time,ds2),newdata=ds1$Time))
+
+stop()
+
+# For one Time: plot area vs Slice
+for (plotId in plotIds) {
+  slice <- na.omit(filter(imageData, Id==plotId))
+  for (t in unique(slice$Time)) {
+    slice <- na.omit(filter(imageData, Id==plotId, Time==t))
+    if (nrow(slice) > 1) {
+      plotData <- mutate(slice
+                         ,area.radius.mean = pi*radius.mean^2
+                         ,area.radius.max = pi*radius.max^2
+                         ,area.radius.min = pi*radius.min^2) %>% 
+        gather(metric, area, starts_with("area"))
+      print(ggplot(plotData, aes(x=SliceLocation, y=area, colour=metric))+geom_line()+geom_point()+
+              ggtitle(paste("Segment area over Slice for ID",
+                            unique(slice$Id),"Time",unique(slice$Time))))
+    } else {
+      cat("No image with identified LV at all for Time:", unique(slice$Id), unique(slice$Time), fill=T)
+    }
+  }  
+}
 
 # Aggregate up to Time level
 #sliceList <- getSliceList(playlist=imageList)

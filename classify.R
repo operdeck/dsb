@@ -6,6 +6,8 @@
 # TODO if segment picture is available, show that next to the base one,
 # overlay with original
 
+# TODO give preference to new segments with existing classification?
+
 source("util.R")
 
 gc()
