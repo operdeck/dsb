@@ -45,7 +45,7 @@ print("Reading segmentation")
 imagePredictFile <- "allSegments-segmentsPredicted.csv"
 segmentPredictFile <- "segmentTrainSet.csv"
 
-skipSegmentPrediction <- T
+skipSegmentPrediction <- F
 
 if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   # Keep data if we want to skip the segmentation predict phase
@@ -234,55 +234,66 @@ allSegments[, isLV := segIndex == segIndex[which.max(pLV)], by=c("Id","Slice","T
 imageData <- createImagePredictSet(left_join(imageList, 
                                              filter(allSegments, isLV),
                                              by=c("Id", "Slice", "Time")))
-# Only keeping the images for the middle slices
 cat("Total",nrow(imageData),"images, of which",nrow(filter(imageData,isLV)),"have a detected LV",fill=T)
 
-pLeftVentricle <- cut(imageData$pLV,10)
 # This should show that lower slice order have a higher probabilities for the left ventricle (better segmentation)
-print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_bar()+
+pLeftVentricle <- cut(imageData$pLV,breaks=seq(0,1,by=0.1))
+print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_bar(position="dodge")+
         ggtitle("LV Probability vs Slice Order") +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
-# We'll plot results for some randomly chose Ids
-plotIds <- sample(unique(imageData$Id),10)
-# TODO - scale plots
-# - predict with much smaller set
-# - fold back to imageData
-# - also find outliers in time direction?
-for (plotId in plotIds) {
-  print(plotId)
-  
-  # Single ID
-  #data3D <- select(imageData[Id == plotId,], Time, Slice, SliceLocation, area) %>% arrange(Time)
-  data3D <- imageData[Id == plotId,]
-  data3D <- data3D[,sapply(data3D, is.numeric),with=F]
+# Random IDs for plotting
+sampleIds <- sample(unique(imageData$Id), 10)
+
+# Data cleansing: outlier detection and missing value imputation
+zRange <- range(0: quantile(imageData$area, na.rm=T, p=0.90)) 
+for (plotId in unique(imageData$Id)) {
+  cat("Outlier detection and missing value imputation for",plotId,fill=T)
+  data3D <- imageData[Id == plotId, sapply(imageData, is.numeric), with=F]
   
   # View raw data - with missing and outliers
+  print(wireframe(area ~ Time*SliceLocation, data=data3D,
+                  shade=T, col.regions = terrain.colors(100), 
+                  main=paste("Raw Id=",plotId),
+                  zlim=zRange))
   
-  print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100), main=paste("Raw Id=",plotId)))
-  
-  # Outliers removal per slice
+  # Outliers removal by time and slice (TODO cant we do this at once somehow?)
   similarityData <- select(data3D, Slice, Time, area)
   nOutliers <- 0
   for (t in unique(similarityData$Time)) {
     d <- similarityData[Time==t]$area
     if (sum(!is.na(d)) > 3) {
-      outliers <- which(!is.na(d))[which(lofactor(na.omit(d), k=3) > 2.0)]
+      outlier.scores <- lofactor(na.omit(d), k=3)
+      #plot(density(outlier.scores))
+      outliers <- which(!is.na(d))[which(outlier.scores > 3.0)] # somewhat arbitrary
       nOutliers <- nOutliers + length(outliers)
       outlierSlices <- similarityData[Time==t]$Slice[outliers]
       data3D[Time==t & Slice %in% outlierSlices, area := NA]
     }
   }
-  cat(nOutliers, "outliers by slice for Id", plotId, fill=T)
+  for (s in unique(similarityData$Slice)) {
+    d <- similarityData[Slice==s]$area
+    if (sum(!is.na(d)) > 3) {
+      outlier.scores <- lofactor(na.omit(d), k=3)
+      #plot(density(outlier.scores))
+      outliers <- which(!is.na(d))[which(outlier.scores > 3.0)] # somewhat arbitrary
+      nOutliers <- nOutliers + length(outliers)
+      outlierTimes <- similarityData[Slice==s]$Time[outliers]
+      data3D[Slice==t & Time %in% outlierTimes, area := NA]
+    }
+  }
+  cat(nOutliers, "outliers for Id", plotId, fill=T)
   
-#   outlier.scores <- lofactor(scale(similarityData[which(complete.cases(similarityData))]), k=5)
-#   #plot(density(outlier.scores))
-#   outliers <- which(complete.cases(similarityData))[which(outlier.scores > 1.2)]
-#   cat("Outliers:",outliers,fill=T)
-#   data3D$area[outliers] <- NA
+  #   outlier.scores <- lofactor(scale(similarityData[which(complete.cases(similarityData))]), k=5)
+  #   #plot(density(outlier.scores))
+  #   outliers <- which(complete.cases(similarityData))[which(outlier.scores > 1.2)]
+  #   cat("Outliers:",outliers,fill=T)
+  #   data3D$area[outliers] <- NA
   
-  print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,
-                  col.regions = terrain.colors(100), main=paste("Outliers Removed Id=",plotId)))
+  print(wireframe(area ~ Time*SliceLocation, data=data3D,
+                  shade=T, col.regions = terrain.colors(100), 
+                  main=paste("Outliers Removed Id=",plotId), 
+                  zlim=zRange))
   
   # Missing imputation
   
@@ -290,92 +301,39 @@ for (plotId in plotIds) {
   # should we help bagging and add some 'shifted' rows of area data?
   # only set the missing values, not all
   # kNN doesnt work when there are too many missings
-  preds <- predict(preProcess(data3D, method="bagImpute"),newdata=data3D)
+  preds <- predict(preProcess(data3D, method="bagImpute"), newdata=data3D) # [,!sapply(data3D, anyNA),with=F]
   data3D$area <- ifelse(is.na(data3D$area), preds$area, data3D$area)
 
-  print(wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100), main=paste("Missings Imputed Id=",plotId)))
+  print(wireframe(area ~ Time*SliceLocation, data=data3D,
+                  shade=T, col.regions = terrain.colors(100), 
+                  main=paste("Missings Imputed Id=",plotId), 
+                  zlim=zRange))
+  
+  # copy imputed and smoothed data back to imageData
+  for (i in seq(nrow(data3D))) {
+    imageData[Id == data3D[i]$Id & Slice == data3D[i]$Slice & Time == data3D[i]$Time, area := data3D[i]$area ]
+  }
 }
-stop()
-
-# mx <- mx[rank(mx$SliceLocation)]
-# y <- mx$SliceLocation
-# x <- unique(data3D$Time)
-# z <- as.matrix(select(mx, -Slice, -SliceLocation))
-# persp3d(x=seq(nrow(z)),y=seq(ncol(z)),z,col="blue",aspect="iso") #bg3d
-
-# f <- aregImpute(~ area+Slice+SliceLocation+Time, data=data3D)
-# data3D$area <- f$imputed$area
-# wireframe(area ~ Time*SliceLocation, data=data3D,shade=T,col.regions = terrain.colors(100))
-# # smooth...
-# 
-# mx <- spread(data3D, Time, area)
-# 
-# stop()
-
-# imageData <- filter(imageData, SliceOrder <= 2)
 
 #
 # Plot some graphs
 #
 
-# For one Slice: plot area vs Time
-for (i in seq(length(plotIds))) {
-  ds <- filter(imageData, Id==plotIds[i])
-  for (slice in unique(ds$Slice)) {
-    plotSlice(ds[Slice == slice,])
-  }
-}
-
-# maybe interpolate and create
-# ID, Slice, Time ==> area
-# with > 25% missing skip?
-# could be used to fill missing 'area' gaps in imageList but does not remove outliers
-s <- 30
-ds1 <- ds[Slice == s]
-ds2 <- na.omit(ds1)
-ggplot(ds1, aes(Time, area))+geom_line()
-# interp <- smooth.spline(ds2$Time,ds2$area)
-# qplot(interp$x, interp$y)+geom_line()
-qplot(ds1$Time,predict(loess(area~Time,ds2),newdata=ds1$Time))
-
-stop()
-
-# For one Time: plot area vs Slice
-for (plotId in plotIds) {
-  slice <- na.omit(filter(imageData, Id==plotId))
-  for (t in unique(slice$Time)) {
-    slice <- na.omit(filter(imageData, Id==plotId, Time==t))
-    if (nrow(slice) > 1) {
-      plotData <- mutate(slice
-                         ,area.radius.mean = pi*radius.mean^2
-                         ,area.radius.max = pi*radius.max^2
-                         ,area.radius.min = pi*radius.min^2) %>% 
-        gather(metric, area, starts_with("area"))
-      print(ggplot(plotData, aes(x=SliceLocation, y=area, colour=metric))+geom_line()+geom_point()+
-              ggtitle(paste("Segment area over Slice for ID",
-                            unique(slice$Id),"Time",unique(slice$Time))))
-    } else {
-      cat("No image with identified LV at all for Time:", unique(slice$Id), unique(slice$Time), fill=T)
-    }
-  }  
-}
+print(ggplot(filter(imageData, !is.na(pLV) & Id %in% sampleIds), aes(x=SliceLocation, y=area, colour=factor(Id)))+geom_line()+
+        ggtitle("Segment area over Slice"))
+print(ggplot(filter(imageData, !is.na(pLV) & Id %in% sampleIds), aes(x=Time, y=area, colour=factor(Id)))+geom_boxplot()+
+        ggtitle("Segment area over Time"))
 
 # Aggregate up to Time level
-#sliceList <- getSliceList(playlist=imageList)
 timeData <- group_by(imageData, Id, Time) %>%
-  summarise(volArea     = sum(SliceThickness*area, na.rm=T),
-            volAreaEllipse = sum(SliceThickness*area.ellipse, na.rm=T),
-            volAreaMax  = sum(SliceThickness*pi*radius.max^2, na.rm=T),
-            volAreaMin  = sum(SliceThickness*pi*radius.min^2, na.rm=T),
-            volAreaMean = sum(SliceThickness*pi*radius.mean^2, na.rm=T),
+  summarise(volume     = sum(SliceThickness*area, na.rm=T),
+            #volumeEllipse = sum(SliceThickness*area.ellipse, na.rm=T),
+            #volumeMax  = sum(SliceThickness*pi*radius.max^2, na.rm=T),
+            #volumeMin  = sum(SliceThickness*pi*radius.min^2, na.rm=T),
+            #volumeMean = sum(SliceThickness*pi*radius.mean^2, na.rm=T),
             isLV = any(isLV))
-plotData <- gather(timeData, metric, volume, contains("Area"))
-
-for (plotId in plotIds) {
-  slice <- filter(plotData, Id==plotId)
-  print(ggplot(slice, aes(x=Time, y=volume, colour=metric))+geom_line()+geom_point()+
-          ggtitle(paste("Volume over Time for ID", unique(slice$Id))))
-}
+print(ggplot(filter(timeData, Id %in% sampleIds), aes(x=Time, y=volume, colour=factor(Id)))+geom_line()+geom_point()+
+        ggtitle("Volume over Time"))
 
 cat("Total",nrow(timeData),"images, of which",nrow(filter(timeData,isLV)),"have a detected LV",fill=T)
 # poorly segmented slices: filter(timeData, is.na(isLV), with=T)
@@ -385,42 +343,38 @@ timeData <- filter(timeData, !is.na(isLV)) # keep only the ones with an LV
 caseList <- getIdList(playlist=imageList)
 caseData <- left_join(caseList, group_by(timeData, Id) %>%
                         summarise(
-                          max_volArea = max(volArea, na.rm=T),
-                          min_volArea = min(volArea, na.rm=T),
-                          sd_volArea  = sd(volArea, na.rm=T),
+                          max_volume = max(volume, na.rm=T),
+                          min_volume = min(volume, na.rm=T),
+                          sd_volume  = sd(volume, na.rm=T),
                           
-                          max_volAreaEllipse = max(volAreaEllipse, na.rm=T),
-                          min_volAreaEllipse = min(volAreaEllipse, na.rm=T),
+                          #max_volumeEllipse = max(volumeEllipse, na.rm=T),
+                          #min_volumeEllipse = min(volumeEllipse, na.rm=T),
                           
-                          max_volAreaMax = max(volAreaMax, na.rm=T),
-                          min_volAreaMax = min(volAreaMax, na.rm=T),
+                          #max_volumeMax = max(volumeMax, na.rm=T),
+                          #min_volumeMax = min(volumeMax, na.rm=T),
                           
-                          #                                   max_volAreaMin = max(volAreaMin, na.rm=T),
-                          #                                   min_volAreaMin = min(volAreaMin, na.rm=T),
+                          #max_volumeMin = max(volumeMin, na.rm=T),
+                          #min_volumeMin = min(volumeMin, na.rm=T),
                           
-                          #                           max_volAreaMean = max(volAreaMean, na.rm=T),
-                          #                           min_volAreaMean = min(volAreaMean, na.rm=T),
+                          #max_volumeMean = max(volumeMean, na.rm=T),
+                          #min_volumeMean = min(volumeMean, na.rm=T),
                           
                           isLV = any(isLV)), 
                       by="Id")
-
 cat("Total",nrow(caseData),"cases, of which",nrow(filter(caseData,isLV)),"have a detected LV",fill=T)
 
 # Train data
 trainVolumes <- fread('data/train.csv') 
 caseData <- left_join(caseData, trainVolumes, by="Id")
 
-# TODO deal with missing Id's - see slicelist
-
 # All cases (dev/train/test) with engineered extra features
-
 casePredictSet <- select(caseData, 
-                         -Id, -Dataset, -ImgType, -isLV) # iffy
-casePredictSet <- mutate(casePredictSet, # extra vars
-                         maxVolume2 = max_volAreaEllipse^2,
-                         minVolume2 = max_volAreaEllipse^2,
-                         maxVolumeSlice = max_volAreaEllipse*SliceCount,
-                         minVolumeSlice = max_volAreaEllipse*SliceCount)
+                         -Id, -Dataset, -ImgType, -isLV)
+# casePredictSet <- mutate(casePredictSet, # extra vars
+#                          maxVolume2 = max_volumeEllipse^2,
+#                          minVolume2 = max_volumeEllipse^2,
+#                          maxVolumeSlice = max_volumeEllipse*SliceCount,
+#                          minVolumeSlice = max_volumeEllipse*SliceCount)
 
 ### Build model (caret)
 

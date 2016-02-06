@@ -200,26 +200,26 @@ createImagePredictSet <- function(ds)
                lengthMultiplier = sqrt(areaMultiplier),
                
                area = s.area*areaMultiplier,
-               area.ellipse = pi*s.radius.min*s.radius.max*areaMultiplier,
+               #area.ellipse = pi*s.radius.min*s.radius.max*areaMultiplier,
                
-               perimeter = s.perimeter*lengthMultiplier,
-               radius.mean = s.radius.mean*lengthMultiplier,
-               radius.min = s.radius.min*lengthMultiplier,
-               radius.max = s.radius.max*lengthMultiplier,
-               radius.var = sqrt(s.radius.sd)*lengthMultiplier,
+               #perimeter = s.perimeter*lengthMultiplier,
+               #radius.mean = s.radius.mean*lengthMultiplier,
+               #radius.min = s.radius.min*lengthMultiplier,
+               #radius.max = s.radius.max*lengthMultiplier,
+               #radius.var = sqrt(s.radius.sd)*lengthMultiplier,
                
-               majoraxis = m.majoraxis*lengthMultiplier,
-               roundness = 4*pi*area/(perimeter^2),
+               #majoraxis = m.majoraxis*lengthMultiplier,
+               #roundness = 4*pi*area/(perimeter^2),
                
                slicePct = SliceIndex/SliceCount) %>%
-    rename(
-      # "m.eccentricity" and "m.theta" are scale independent
-      eccentricity = m.eccentricity,
-      theta = m.theta) %>%
-    select(-m.majoraxis,            # is orientation dependent
+    select(-starts_with("PixelSpacing."),
+           -segIndex,               # segment attribute
+           -starts_with("m."),      # segment attribute
+           -m.majoraxis,            # is orientation dependent
            -areaMultiplier,         # is temporary variable
            -lengthMultiplier,       # is temporary variable
            -starts_with("s."),      # renamed and scaled
+           -starts_with("ROI."),    # is position dependent
            -m.cx, -m.cy)            # is position dependent
   
   return (ds[,sort(names(ds)),with=F])
