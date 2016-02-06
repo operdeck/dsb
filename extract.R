@@ -27,12 +27,25 @@ source("util.R")
 # see bio image detection stuff
 # http://bioconductor.wustl.edu/bioc/vignettes/EBImage/inst/doc/AnalysisWithEBImage.pdf
 
-segmentImagesForOneSlice <- function(imgMetaData, prevROI=NULL) {
-  allImages <- vector(mode = "list", length = nrow(imgMetaData))
-  for (i in seq(nrow(imgMetaData))) {
-    f <- paste("data",imgMetaData$FileName[i],sep="/")
+getAverageImage <- function(allImages) {
+  avgImg <- NULL
+  for (i in allImages) {
+    if (is.null(avgImg)) {
+      avgImg <- i
+    } else {
+      avgImg <- avgImg + i
+    }
+  }
+  avgImg <- avgImg / length(allImages)
+  return(avgImg)  
+}
+
+readAllImages <- function(metaData) {
+  allImages <- vector(mode = "list", length = nrow(metaData))
+  for (i in seq(nrow(metaData))) {
+    f <- paste("data",metaData$FileName[i],sep="/")
     if (!file.exists(f)) {
-      print(imgMetaData[i,])
+      print(metaData[i,])
       print(f)
       stop("File doesnt exist - formatting issues or playlist out of sync with local filesystem?")
     }
@@ -43,126 +56,123 @@ segmentImagesForOneSlice <- function(imgMetaData, prevROI=NULL) {
     }
     allImages[[i]] <- img
   }
+  return(allImages)
+}
+
+findROI <- function (allImages, imgMetaData) {
+  avgImg <- getAverageImage(allImages)
   
-  if (is.null(prevROI)) {
-    # Calculate 'average' image
-    isFirst <- T
-    for (i in allImages) {
-      if (isFirst) {
-        avgImg <- i
-        isFirst <- F
-      } else {
-        avgImg <- avgImg + i
-      }
-    }
-    avgImg <- avgImg / length(allImages)
+  display(avgImg,all=T,method="raster")
+  text(10,20,paste("ID",unique(imgMetaData$Id),"slice",unique(imgMetaData$Slice)),col="yellow",pos=4)
+  
+  rois <- data.frame(m.cx = rep(0,nrow(imgMetaData)), m.cy = rep(0,nrow(imgMetaData)), radius = rep(0,nrow(imgMetaData)))
+  for (i in 1:nrow(imgMetaData)) {
+    pixelAreaScale <- imgMetaData$PixelSpacing.x[i] * imgMetaData$PixelSpacing.y[i]
+    pixelLengthScale <- sqrt(pixelAreaScale)
+    img_roi_subtracted <- normalize(abs(allImages[[i]] - avgImg))
+    img_roi_thresholded <- (img_roi_subtracted > otsu(img_roi_subtracted))
+    img_roi <- medianFilter(img_roi_thresholded, min(1,round(1.5/pixelLengthScale))) # 2 for "normal images" scale 0.75
+    
+    # Find the ROI
+    moments <- computeFeatures.moment(img_roi)
+    rois$m.cx[i] <- moments[1]
+    rois$m.cy[i] <- moments[2]
+    
+    coords <- as.data.frame(pos2coord(pos=which(img_roi>0),dim.mat=dim(img_roi)))
+    names(coords) <- c('x','y')
+    coords$distToROI <- floor(sqrt((coords$x - moments[1])^2+(coords$y - moments[2])^2))
+    rois$radius[i] <- quantile(coords$distToROI, probs=c(0.80)) # important constant: what to consider not moving
+    
+    symbols(x=moments[1],y=moments[2],circles=rois$radius[i],fg="blue",add=T)
   }
-  
+  # TODO - perhaps min, or overlap of rois is better measure, or a .95 value or something,
+  # maybe drop the outliers (lofactor)
+  roi <- list(x = mean(rois$m.cx), y = mean(rois$m.cy), r = mean(rois$radius))
+}
+
+segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
+  allImages <- readAllImages(imgMetaData)  
+  hasPredefinedROI <- !is.null(roi)
+  if (!hasPredefinedROI) {    
+    roi <- findROI(allImages, imgMetaData)
+  }    
   sliceSegmentation <- NULL
   for (i in 1:nrow(imgMetaData)) {
     pixelAreaScale <- imgMetaData$PixelSpacing.x[i] * imgMetaData$PixelSpacing.y[i]
     pixelLengthScale <- sqrt(pixelAreaScale)
-    
     img_original <- allImages[[i]] 
-    
-    if (is.null(prevROI)) {    
-      img_roi_subtracted <- normalize(abs(img_original - avgImg))
-      img_roi_thresholded <- (img_roi_subtracted > otsu(img_roi_subtracted))
-      img_roi <- medianFilter(img_roi_thresholded, min(1,round(1.5/pixelLengthScale))) # 2 for "normal images" scale 0.75
-      
-      # Find the ROI
-      roi <- as.data.frame(computeFeatures.moment(img_roi))
-      coords <- as.data.frame(pos2coord(pos=which(img_roi>0),dim.mat=dim(img_roi)))
-      names(coords) <- c('x','y')
-      coords$distToROI <- floor(sqrt((coords$x - roi$m.cx)^2+(coords$y - roi$m.cy)^2))
-      roi$radius <- quantile(coords$distToROI, probs=c(0.80)) # important constant: what to consider not moving
-    } else {
-      roi <- data.frame(m.cx = prevROI$x, m.cy = prevROI$y, radius = prevROI$r)
-    }    
-    
-    if (roi$radius > 1) {
-      # Use ROI to normalize image intensity. Using only half radius because often high intensity around borders.
-      roi_mask <- matrix(0, nrow=dim(img_original)[1], ncol=dim(img_original)[2])
-      roi_mask <- drawCircle(roi_mask, x=roi$m.cx, y=roi$m.cy, roi$radius/2, col=1, fill=T)
-      img_masked <- img_original*roi_mask
-      scale <- 1/max(img_masked)
-      
-      #img_original <- img_original*scale # scale original image wrt ROI
-      
-      maskSize <- 6  #3.75 # Size of erode/dilate mask in millimeter
-      kern <- makeBrush(max(1,round(maskSize/pixelLengthScale)), shape= 'Gaussian', sigma=10) # 5 for "normal images" scale 0.75
-      
-      img_denoised <- normalize(opening(img_original*scale, kern))
-      
-      otsu <- otsu(img_denoised)
+    if (roi$r > 1) {
+      # Normalize intensity using ROI. Using only half radius because often high intensity around borders.
+      intensity_mask <- drawCircle(matrix(0, nrow=dim(img_original)[1], ncol=dim(img_original)[2]), 
+                                   x=roi$x, y=roi$y, roi$r/2, col=1, fill=T)
+      img_masked_to_roi <- img_original*intensity_mask # keeps only pixels inside ROI
+      scale <- 1/max(img_masked_to_roi)
+      # Filter image
+      blurBrushSize <- 3.75 # Size of erode/dilate mask in millimeter
+      blurBrush <- makeBrush(max(1,round(blurBrushSize/pixelLengthScale)), shape= 'Gaussian', sigma=10) # 5 for "normal images" scale 0.75
+      img_filtered <- normalize(opening(img_original*scale),blurBrush) #normalize(opening(img_original*scale, blurBrush))
+      # Threshold and segment image. Will do multiple iterations if necessary.
+      otsuThreshold <- otsu(img_filtered)
       thresholdStepSize <- 0.2
-      thresholds <- seq(otsu, 1, by=thresholdStepSize) # hopefully the first one is good, but never now...
-      if (otsu > thresholdStepSize) { thresholds <- c(thresholds, seq(otsu-thresholdStepSize, 0, by=-thresholdStepSize)) }
-      
+      thresholds <- seq(otsuThreshold, 1, by=thresholdStepSize) # hopefully the first one is good, but never now...
+      if (otsuThreshold > thresholdStepSize) { thresholds <- c(thresholds, seq(otsuThreshold-thresholdStepSize, 0, by=-thresholdStepSize)) }
       thresholdIndex <- 0
       doneThresholding <- F
+      segmentInfo <- NULL
       while (!doneThresholding & (thresholdIndex < length(thresholds))) {
         thresholdIndex <- thresholdIndex + 1
         currentThreshold <- thresholds[thresholdIndex]
         if (thresholdIndex > 1) {
-          cat("Re-thresholding",imgMetaData$FileName[i],"#",thresholdIndex,"at",currentThreshold,fill=T)
+          cat("Re-thresholding",imgMetaData$FileName[i],"#",thresholdIndex,"(of",length(thresholds),") at",currentThreshold,fill=T)
         }
-        
-        img_thresholded <- img_denoised > currentThreshold
+        img_thresholded <- img_filtered > currentThreshold
         img_segmented <- fillHull(bwlabel(img_thresholded))
-        
-        # Get segment meta data and select only the segments within the ROI
-        segmentInfo <- cbind(imgMetaData[i,],
-                             data.frame(computeFeatures.moment(img_segmented)),
-                             data.frame(computeFeatures.shape(img_segmented)))
-        distToROI <- sqrt((segmentInfo$m.cx - roi$m.cx)^2 + (segmentInfo$m.cy - roi$m.cy)^2)
-        
-        segmentInfo$segIndex <- seq(nrow(segmentInfo))
-        segmentInfo$UUID  <- sapply(1:nrow(segmentInfo),UUIDgenerate) # unique ID for each segment
-        
-        segmentInfo$ROI.x <- round(roi$m.cx)
-        segmentInfo$ROI.y <- round(roi$m.cy)
-        segmentInfo$ROI.r <- round(roi$radius)
-        
-        # Only keep segments inside the ROI
-        minSegmentArea <- 10 # Minimum segment size in square mm
-        segmentInfo <- filter(segmentInfo, distToROI < roi$radius, s.area > minSegmentArea/pixelAreaScale)
-        img_colourSegs <- colorLabels(rmObjects(img_segmented, 
-                                                setdiff(seq(max(img_segmented)),segmentInfo$segIndex)))
-        
-        # assume a good segmentation has at least 1 segment
-        if (nrow(segmentInfo) >= 1) { doneThresholding <- T}
-        
-        if (is.null(prevROI)) {
-          img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
-                                       drawCircle(toRGB(img_original), x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
-                                       toRGB(img_roi_subtracted),
-                                       #toRGB(normalize(img_masked)),
-                                       toRGB(img_denoised),
-                                       toRGB(img_thresholded),
-                                       toRGB(img_roi))
-        } else {
-          img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
-                                       drawCircle(toRGB(img_original), x=roi$m.cx, y=roi$m.cy, roi$radius, "yellow", fill=FALSE, z=1),
-                                       toRGB(img_denoised),
-                                       toRGB(img_thresholded))
+        if (max(img_segmented) > 0) {
+          # Get segment meta data and select only the segments within the ROI
+          segmentInfo <- cbind(imgMetaData[i,],
+                               data.frame(computeFeatures.moment(img_segmented)),
+                               data.frame(computeFeatures.shape(img_segmented)))
+          distToROI <- sqrt((segmentInfo$m.cx - roi$x)^2 + (segmentInfo$m.cy - roi$y)^2)
+
+          segmentInfo$segIndex <- seq(nrow(segmentInfo))
+          segmentInfo$UUID  <- sapply(1:nrow(segmentInfo),UUIDgenerate) # unique ID for each segment
+          segmentInfo$ROI.x <- round(roi$x)
+          segmentInfo$ROI.y <- round(roi$y)
+          segmentInfo$ROI.r <- round(roi$r)
+  
+          # Only keep segments inside the ROI
+          segmentInfo <- filter(segmentInfo, distToROI < roi$r)
+          img_colourSegs <- colorLabels(rmObjects(img_segmented, 
+                                                  setdiff(seq(max(img_segmented)),segmentInfo$segIndex)))
+          # assume a good segmentation has at least 1 segment
+          if (nrow(segmentInfo) >= 1) { doneThresholding <- T}
+          
+          if (!hasPredefinedROI) {
+            img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, x=roi$x, y=roi$y, roi$r, "yellow", fill=FALSE, z=1),
+                                         drawCircle(toRGB(img_original),x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
+                                         toRGB(img_colourSegs),
+                                         toRGB(img_thresholded))
+          } else {
+            img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, x=roi$x, y=roi$y, roi$r, "yellow", fill=FALSE, z=1),
+                                         toRGB(img_thresholded))
+          }
+          display(img_comb,all=T,method="raster")
+          text(10,20,imgMetaData$FileName[i],col="yellow",pos=4)
         }
-        display(img_comb,all=T,method="raster")
-        text(10,20,imgMetaData$FileName[i],col="yellow",pos=4)
-      
       }
-      
-      if (nrow(segmentInfo) > 0) {
+      if (!is.null(segmentInfo) && nrow(segmentInfo) > 0) {
         dirName <- getSegmentedImageDir(segmentInfo[1,])
         dir.create(dirName, showWarnings = F, recursive = T)
         fName <- getSegmentedImageFile(segmentInfo[1,], dirName)
         writeImage(img_colourSegs, fName)
       }
       
-      if (is.null(sliceSegmentation)) {
-        sliceSegmentation <- segmentInfo
-      } else {
-        sliceSegmentation <- rbind(sliceSegmentation, segmentInfo)
+      if (!is.null(segmentInfo)) {
+        if (is.null(sliceSegmentation)) {
+          sliceSegmentation <- segmentInfo
+        } else {
+          sliceSegmentation <- rbind(sliceSegmentation, segmentInfo)
+        }
       }
     } else {
       print("WARN: invalid ROI for segment (too small perhaps?)")
@@ -208,11 +218,9 @@ if (!is.null(allSegments)) {
 } else {
   imageList$isProcessed <- F
 }
-imageList$Random <- runif(max(imageList$Id))[imageList$Id] # keep ID's together
-
-# imageList$SpecialOrder <- ifelse(imageList$SliceOrder > 1, imageList$SliceOrder, 10) # first last - temporary
-# before random: -SliceOrder, Dataset
-imageList <- arrange(imageList, isProcessed, Random) %>% select(-Random)
+imageList$Random <- runif(max(imageList$Id))
+imageList$SpecialOrder <- ifelse(imageList$SliceOrder > 1, imageList$SliceOrder, 1+max(imageList$SliceOrder))
+imageList <- arrange(imageList, isProcessed, SpecialOrder, Random) %>% select(-Random, -SpecialOrder)
 
 # Process images per slice. Image of the same slice (usually) have same dimensions, location etc
 
@@ -228,7 +236,7 @@ for (nextSlice in seq(nrow(sliceList))) {
     # just in case not all files are on this filesystem
     next
   }
-  cat("Processing",slice$Dataset,slice$Id,"slice",slice$Slice,
+  cat("Processing",nextSlice,"/",nrow(sliceList),":",slice$Dataset,slice$Id,"slice",slice$Slice,
       paste("(",slice$SliceIndex, "/", slice$SliceCount, " order:", slice$SliceOrder, ")", sep=""),
       fill=T)
 
@@ -280,24 +288,19 @@ for (nextSlice in seq(nrow(sliceList))) {
   }
 
   # Add segmentation to results and write file (once in a while)
-  if ((nextSlice %% 10 == 0) | 
-        (nextSlice == nrow(sliceList)) | 
-        ((nextSlice < nrow(sliceList)) & (sliceList$Dataset[nextSlice+1] != sliceList$Dataset[nextSlice]))) {
-    ds <- sliceList$Dataset[nextSlice]
-
+  if ((nextSlice %% 100 == 0) | (nextSlice == nrow(sliceList))) {
     # temp add Dataset to the segments for reporting and progress info
     allSegments <- left_join(allSegments, unique(select(imageList, Id, Slice, Time, Dataset)), by=c("Id","Slice","Time"))
-    cat("...write", getSegmentFile(ds), "id's:",length(unique(filter(allSegments, Dataset==ds)$Id)), fill=T)
-    
-    write.csv(select(filter(allSegments, Dataset==ds), -Dataset), getSegmentFile(ds), row.names=F)
-    
+    for (ds in unique(sliceList$Dataset)) {
+      cat("...write", getSegmentFile(ds), "id's:",length(unique(filter(allSegments, Dataset==ds)$Id)), fill=T)
+      write.csv(select(filter(allSegments, Dataset==ds), -Dataset), getSegmentFile(ds), row.names=F)
+    }
     print("...completeness:")
     print(group_by(left_join(sliceList, 
                              mutate(unique(select(allSegments, Id, Slice)), isSegmented=TRUE), 
                              by=c("Id", "Slice")), Dataset) %>% 
             summarise(complete = paste(round(100*sum(isSegmented, na.rm=T)/n(),2),"%",sep="" )))
-    
-    # Show progress
+    # Plot progress
     ds <- group_by(left_join(sliceList, 
                              mutate(unique(select(allSegments, Id, Slice)), isSegmented=TRUE), 
                              by=c("Id", "Slice")), Dataset, Id) %>% 
@@ -305,7 +308,6 @@ for (nextSlice in seq(nrow(sliceList))) {
       group_by(Dataset, complete) %>% summarise(n = n())
     print(ggplot(ds, aes(x=complete, y=n, fill=Dataset))+geom_bar(stat="identity")+
             ggtitle("Completeness of segmentation per Id"))
-    
     # drop Dataset again - was only temp
     allSegments <- select(allSegments, -Dataset)
   }
@@ -314,7 +316,7 @@ for (nextSlice in seq(nrow(sliceList))) {
 # write final results (again, just to be sure)
 for (ds in unique(imageList$Dataset)) {
   cat("Write final", getSegmentFile(ds), "id's:",length(unique(filter(allSegments, Dataset==ds)$Id)), fill=T)
-  write.csv(filter(allSegments, Dataset==ds), getSegmentFile(ds), row.names=F)
+  write.csv(select(filter(allSegments, Dataset==ds), -Dataset), getSegmentFile(ds), row.names=F)
 }
 
 

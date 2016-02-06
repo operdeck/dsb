@@ -133,6 +133,8 @@ getImagesWithLVSegments <- function(slice)
   }
 }
 
+# TODO: add variation over time
+# add rank of area (e.g.) vs other segments, maybe also over time
 # Create segment prediction dataset
 createSegmentPredictSet <- function(ds)
 {

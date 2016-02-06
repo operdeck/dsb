@@ -123,7 +123,7 @@ for (ds in unique(imageList$Dataset)) {
     #       fixupROI(ds)
     #     }
     
-    ###dataNew <- select(dataOld, -roundness)
+    #dataNew <- select(dataOld, -Dataset.x, -Dataset.y, -Dataset)
     
     #####
     removedSet <- setdiff(names(dataOld), names(dataNew))
