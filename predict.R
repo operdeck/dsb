@@ -40,6 +40,9 @@ classifiedSegments <- fread('segments-predict.csv')
 print("Reading image meta data")
 imageList <- getImageList()
 
+print("Reading train data")
+trainVolumes <- fread('data/train.csv') 
+
 print("Reading segmentation")
 
 imagePredictFile <- "allSegments-segmentsPredicted.csv"
@@ -242,8 +245,8 @@ print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_b
         ggtitle("LV Probability vs Slice Order") +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
-# Random IDs for plotting
-sampleIds <- sample(unique(imageData$Id), 10)
+# Random IDs from train set for plotting
+sampleIds <- sample(unique(trainVolumes$Id), 10)
 
 # Data cleansing: outlier detection and missing value imputation
 zRange <- range(0: quantile(imageData$area, na.rm=T, p=0.90)) 
@@ -315,6 +318,9 @@ for (plotId in unique(imageData$Id)) {
   }
 }
 
+# for later use
+write.csv(imageData, 'imageData-imputed.csv', row.names=F)
+
 #
 # Plot some graphs
 #
@@ -364,7 +370,6 @@ caseData <- left_join(caseList, group_by(timeData, Id) %>%
 cat("Total",nrow(caseData),"cases, of which",nrow(filter(caseData,isLV)),"have a detected LV",fill=T)
 
 # Train data
-trainVolumes <- fread('data/train.csv') 
 caseData <- left_join(caseData, trainVolumes, by="Id")
 
 # All cases (dev/train/test) with engineered extra features
@@ -380,127 +385,105 @@ casePredictSet <- select(caseData,
 
 casePredictSetTrain <- casePredictSet[!is.na(casePredictSet$Systole) & !is.na(casePredictSet$Diastole)] # set with known outcomes
 
+#
+#
+#
+#
 # IDEA: run this repeatedly, get the distribution of the outcomes to get confidence interval
-casePredictValidationRows <- sample.int(nrow(casePredictSetTrain), 
-                                        validationPercentage*nrow(casePredictSetTrain))
+#
+#
+#
+#
+#
 
-# TEMP not using dev/val split
-casePredictSetTrainVal <- casePredictSetTrain[casePredictValidationRows,]  # validation % of this, for reporting error
-casePredictSetTrainDev <- casePredictSetTrain[-casePredictValidationRows,] # to be used for training the model
-
-fitControl <- trainControl(method = "cv",number = 10)
-systole_m <- train(Systole ~ ., data = select(casePredictSetTrainDev, -Diastole), 
-                   method = "lm", trControl = fitControl, verbose=F)
-diastole_m <- train(Diastole ~ ., data = select(casePredictSetTrainDev, -Systole),
-                    method = "lm", trControl = fitControl, verbose=F)
-print(plot(varImp(systole_m)))
-print(plot(varImp(diastole_m)))
-
-# Caret is nice however it does not give me the confidence intervals
-# maybe to repeated with 1-out sampling to get a 700 x 700 matrix etc then find mean and so
-# for now - just falling back to direct lm
-
-systole_m <- lm(Systole ~ ., data = select(casePredictSetTrainDev, -Diastole))
-diastole_m <- lm(Diastole ~ ., data = select(casePredictSetTrainDev, -Systole))
-
-# Predict ALL cases 
-resultData <- data.frame(caseData, 
-                         Systole = predict(systole_m, 
-                                           newdata = casePredictSet,
-                                           interval="confidence", level=confidence),
-                         Diastole = predict(diastole_m, 
-                                            newdata = casePredictSet,
-                                            interval="confidence", level=confidence))
-
-print("Result data with predictions:")
-print(summary(resultData))
-
-# Fill in missing predictions
-cat("Missing cases:",sum(is.na(resultData$Systole.fit) | is.na(resultData$Diastole.fit)),"out of",nrow(resultData),fill=T)
-cat("   ",resultData$Id[which(is.na(resultData$Systole.fit) | is.na(resultData$Diastole.fit))],fill=T)
-cat("   will be replaced by mean",fill=T)
-predictions <- c("Systole.fit", "Systole.lwr", "Systole.upr", "Diastole.fit", "Diastole.lwr", "Diastole.upr")
-for (pName in predictions) {
-  resultData[[pName]] <- ifelse(is.na(resultData[[pName]]), mean(resultData[[pName]],na.rm=T), resultData[[pName]])
+nSamples <- 40
+for (i in seq(nSamples)) {
+  casePredictValidationRows <- sample.int(nrow(casePredictSetTrain), 
+                                          validationPercentage*nrow(casePredictSetTrain))
+  casePredictSetTrainVal <- casePredictSetTrain[casePredictValidationRows,]  # for reporting error
+  casePredictSetTrainDev <- casePredictSetTrain[-casePredictValidationRows,] # for training the models
+  
+  # Predict with Caret
+  doTuning <- F
+  if (doTuning) {
+    fitControl <- trainControl(
+      method = "repeatedcv", # 10-fold repeated CV
+      number = 10,
+      repeats = 10)
+    gbmGrid <-  expand.grid(interaction.depth = 1:5, # 3
+                            n.trees = (1:20)*5, # 50
+                            shrinkage = 0.1,
+                            n.minobsinnode = 20)
+    systole_model <- train(Systole ~ ., data = select(casePredictSetTrainDev, -Diastole), 
+                           method = "gbm", trControl = fitControl, verbose=F, tuneGrid=gbmGrid)
+    print(ggplot(systole_model))
+    diastole_model <- train(Diastole ~ ., data = select(casePredictSetTrainDev, -Systole), 
+                            method = "gbm", trControl = fitControl, verbose=F, tuneGrid=gbmGrid)
+    print(ggplot(diastole_model))
+  } else {
+    fixedTuningParams <- data.frame(interaction.depth = 3,
+                                    n.trees = 50,
+                                    shrinkage = 0.1,
+                                    n.minobsinnode = 20)
+    systole_model <- train(Systole ~ ., data = select(casePredictSetTrainDev, -Diastole), 
+                           method = "gbm", trControl = trainControl(method = "none"), verbose=F, 
+                           preProcess="knnImpute",
+                           tuneGrid=fixedTuningParams)
+    diastole_model <- train(Diastole ~ ., data = select(casePredictSetTrainDev, -Systole), 
+                            method = "gbm", trControl = trainControl(method = "none"), verbose=F, 
+                            preProcess="knnImpute",
+                            tuneGrid=fixedTuningParams)
+  }  
+  preds_systole_one_sample <- predict(systole_model, newdata=casePredictSet, na.action="na.include")
+  cat(i,head(preds_systole_one_sample),fill=T)
+  preds_diastole_one_sample <- predict(diastole_model, newdata=casePredictSet, na.action="na.include")
+  cat(i,head(preds_diastole_one_sample),fill=T)
+  
+  if (i==1) {
+    preds_systole <- matrix(data = preds_systole_one_sample, ncol = nrow(casePredictSet), nrow = 1, byrow=F)
+    preds_diastole <- matrix(data = preds_diastole_one_sample, ncol = nrow(casePredictSet), nrow = 1, byrow=F)
+  } else {
+    preds_systole <- rbind(preds_systole, preds_systole_one_sample)
+    preds_diastole <- rbind(preds_diastole, preds_diastole_one_sample)
+  }
 }
+dimnames(preds_systole) <- list(1:nSamples,caseData$Id)
+dimnames(preds_diastole) <- list(1:nSamples,caseData$Id)
 
+# Max Volume (mL) - fixed value used in submissions
+NPROBS <- 600
 
-# Plot the results... [which(complete.cases(resultData)),]
-plotData <- select(resultData, contains("stole"), Id) %>% 
-  gather(Phase, Actual, -Id, -contains(".")) %>%
-  mutate(Predicted = ifelse(Phase == "Diastole", Diastole.fit, Systole.fit))
-print(ggplot(na.omit(plotData), 
-             aes(x=Actual,y=Predicted,colour=Phase))+
-        geom_point()+stat_smooth(method = "lm")+
-        xlim(0, 600)+ylim(0, 600)+geom_abline(slope=1,linetype="dashed")+
-        ggtitle("Actual vs Predicted..."))
+# Cumulative probabilities, for all cases
+probs <- matrix(nrow = 2*nrow(casePredictSet), ncol = NPROBS)
+for (i in seq(nrow(casePredictSet))) {
+  probs[2*i-1,] <- sapply(seq(NPROBS), function(v) { return(sum(preds_diastole[,i] < v)/nSamples) })
+  probs[2*i,] <- sapply(seq(NPROBS), function(v) { return(sum(preds_systole[,i] < v)/nSamples) })
+}
+probs <- data.frame(Id = as.vector(sapply(caseData$Id,function(n){paste(n,c('Diastole','Systole'),sep="_")})), probs)
+names(probs) <- c('Id', paste("P",0:(NPROBS-1),sep=""))
+
+# TODO fix this ugly code
+# almost directly submittable now - just filter by set
+write.csv(probs[1001:1400,], "submission.csv", row.names=F)
+
+# 
+# Plot a few of the results
+ds_plot <- gather(probs[1:10,],Volume,Density,-Id)
+ds_plot$Volume <- as.integer(gsub("P(.*)","\\1",ds_plot$Volume))
+# Id <- factor(gsub("(.*)_(.*)","\\1",ds_plot$Id))
+Phase <- factor(gsub("(.*)_(.*)","\\2",ds_plot$Id))
+print(ggplot(data=ds_plot, aes(x=Volume, y=Density, colour=Id, linetype=Phase))+
+        geom_line(alpha=0.5)+
+        ggtitle("Submissions"))
+
+# todo FIX properly
 
 print("Correlations:")
 print(cor(resultData$Systole, resultData$Systole.fit, use="complete.obs"))
 print(cor(resultData$Diastole, resultData$Diastole.fit, use="complete.obs"))
 
-# Max Volume (mL) - fixed value used in submissions
-NPROBS <- 600
 
-# Translate a predicted fit with certain low and high bounds and a confidence interval
-# to a range of probabilities according to a logit sigmoid functions.
-translateToProbs <- function(n.fit, n.low, n.high) 
-{
-  p.low <- (1-confidence)/2
-  p.high <- (confidence+1)/2
-  
-  # alpha, beta and mu are solutions to fitting the logit to the two data points
-  # defined by n.low and n.high vs the probabilities from the confidence interval.
-  mu <- log(1/p.low - 1) / log(1/p.high - 1)
-  alpha <- (mu*n.high - n.low)/(mu - 1)
-  beta <- log(1/p.low - 1)/(alpha - n.low)
-  
-  p <- round(1/(1 + exp(0 - beta*(seq(NPROBS) - alpha))),3)
-  
-  return(p)
-}
-
-# Report on results
-results_Train <- filter(resultData, !is.na(Systole) & !is.na(Diastole))
-results_Test <- filter(resultData, !(Id %in% results_Train$Id))
-results_Summary <- as.data.frame(t(data.frame( train_diastole = as.vector(summary(results_Train$Diastole.fit)),
-                                               test_diastole = as.vector(summary(results_Test$Diastole.fit)),
-                                               train_systole  = as.vector(summary(results_Train$Systole.fit)),
-                                               test_systole  = as.vector(summary(results_Test$Systole.fit)))))
-names(results_Summary) <- names(summary(results_Train$Diastole.fit))
-print("Predictions summary:")
-print(results_Summary)
-
-# Create submission file
-createProbabilities <- function(ds)
-{
-  probs <- matrix(nrow = 2*nrow(ds), ncol = NPROBS)
-  for (i in 1:nrow(ds)) {
-    Id <- ds$Id[i]
-    probs[2*i-1,] <- translateToProbs(ds$Diastole.fit[ds$Id==Id], 
-                                      ds$Diastole.lwr[ds$Id==Id], 
-                                      ds$Diastole.upr[ds$Id==Id])
-    probs[2*i,]   <- translateToProbs(ds$Systole.fit[ds$Id==Id], 
-                                      ds$Systole.lwr[ds$Id==Id], 
-                                      ds$Systole.upr[ds$Id==Id])
-  }
-  probs <- data.frame(Id = as.vector(sapply(ds$Id,function(n){paste(n,c('Diastole','Systole'),sep="_")})), probs)
-  names(probs) <- c('Id', paste("P",0:(NPROBS-1),sep=""))
-  
-  return(probs)
-}
-
-testSubmission <- createProbabilities(results_Test)
-write.csv(testSubmission, "submission.csv", row.names=F)
-
-# Plot a few of the results
-ds_plot <- gather(testSubmission[1:10,],Volume,Density,-Id)
-ds_plot$Volume <- as.integer(gsub("P(.*)","\\1",ds_plot$Volume))
-# Id <- factor(gsub("(.*)_(.*)","\\1",ds_plot$Id))
-Phase <- factor(gsub("(.*)_(.*)","\\2",ds_plot$Id))
-print(ggplot(data=ds_plot, aes(x=Volume, y=Density, colour=Phase))+
-        geom_line(alpha=0.5)+
-        ggtitle("Submissions"))
+# TODO FIX properly
 
 # Report on Kaggle's CRPS score
 # Can probably be done much faster by operating on the whole matrix at once
