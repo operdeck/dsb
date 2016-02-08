@@ -155,10 +155,8 @@ createSegmentPredictSet <- function(ds)
                roundness = 4*pi*area/(perimeter^2),
                
                slicePct = SliceIndex/SliceCount) %>%
-    rename(
-      # "m.eccentricity" and "m.theta" are scale independent
-      eccentricity = m.eccentricity,
-      theta = m.theta) %>%
+    dplyr::rename(eccentricity = m.eccentricity,
+           theta = m.theta) %>%
     select(-FileName,               # is an ID
            -PixelSpacing.x,         # used to build another predictor
            -PixelSpacing.y,         # used to build another predictor

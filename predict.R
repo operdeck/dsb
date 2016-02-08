@@ -203,7 +203,7 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   plotSet <- group_by(data.frame(predictedProbability = cut(probLV, 10), #cut2(probLV, g=20), # equi-weight
                                  isLV = segClassificationSet$isLV,
                                  isVal = (seq(nrow(segClassificationSet)) %in% valSet)), predictedProbability) %>% 
-    summarise(validation = sum(isLV & isVal)/sum(isVal),
+    dplyr::summarise(validation = sum(isLV & isVal)/sum(isVal),
               train = sum(isLV & !isVal)/sum(!isVal),
               count = n()) %>%
     gather(dataset, probability, -count, -predictedProbability)
@@ -332,7 +332,7 @@ print(ggplot(filter(imageData, !is.na(pLV) & Id %in% sampleIds), aes(x=Time, y=a
 
 # Aggregate up to Time level
 timeData <- group_by(imageData, Id, Time) %>%
-  summarise(volume     = sum(SliceThickness*area, na.rm=T),
+  dplyr::summarise(volume     = sum(SliceThickness*area, na.rm=T),
             #volumeEllipse = sum(SliceThickness*area.ellipse, na.rm=T),
             #volumeMax  = sum(SliceThickness*pi*radius.max^2, na.rm=T),
             #volumeMin  = sum(SliceThickness*pi*radius.min^2, na.rm=T),
@@ -348,7 +348,7 @@ timeData <- filter(timeData, !is.na(isLV)) # keep only the ones with an LV
 # Now, aggregate up to Id
 caseList <- getIdList(playlist=imageList)
 caseData <- left_join(caseList, group_by(timeData, Id) %>%
-                        summarise(
+                        dplyr::summarise(
                           max_volume = max(volume, na.rm=T),
                           min_volume = min(volume, na.rm=T),
                           sd_volume  = sd(volume, na.rm=T),
