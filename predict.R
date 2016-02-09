@@ -385,17 +385,7 @@ casePredictSet <- select(caseData,
 
 casePredictSetTrain <- casePredictSet[!is.na(casePredictSet$Systole) & !is.na(casePredictSet$Diastole)] # set with known outcomes
 
-#
-#
-#
-#
-# IDEA: run this repeatedly, get the distribution of the outcomes to get confidence interval
-#
-#
-#
-#
-#
-
+# Run repeatedly to get a distribution of the predictions
 nSamples <- 40
 for (i in seq(nSamples)) {
   casePredictValidationRows <- sample.int(nrow(casePredictSetTrain), 
@@ -462,29 +452,29 @@ for (i in seq(nrow(casePredictSet))) {
 probs <- data.frame(Id = as.vector(sapply(caseData$Id,function(n){paste(n,c('Diastole','Systole'),sep="_")})), probs)
 names(probs) <- c('Id', paste("P",0:(NPROBS-1),sep=""))
 
-# TODO fix this ugly code
-# almost directly submittable now - just filter by set
-write.csv(probs[1001:1400,], "submission.csv", row.names=F)
+# Submit results
+submitRange <- c(2*(which(caseData$Dataset != "train"))-1, 2*(which(caseData$Dataset != "train")))
+cat("Creating submission scores for range",range(submitRange),fill=T)
+write.csv(probs[min(submitRange):max(submitRange),], "submission.csv", row.names=F)
 
-# 
 # Plot a few of the results
-ds_plot <- gather(probs[1:10,],Volume,Density,-Id)
+ds_plot <- gather(probs[which(caseData$Id %in% sampleIds),],Volume,Density,-Id)
 ds_plot$Volume <- as.integer(gsub("P(.*)","\\1",ds_plot$Volume))
-# Id <- factor(gsub("(.*)_(.*)","\\1",ds_plot$Id))
-Phase <- factor(gsub("(.*)_(.*)","\\2",ds_plot$Id))
-print(ggplot(data=ds_plot, aes(x=Volume, y=Density, colour=Id, linetype=Phase))+
+ds_plot$Patient <- factor(gsub("(.*)_(.*)","\\1",ds_plot$Id))
+ds_plot$Phase <- factor(gsub("(.*)_(.*)","\\2",ds_plot$Id))
+print(ggplot(data=ds_plot, aes(x=Volume, y=Density, colour=Patient, linetype=Phase))+
         geom_line(alpha=0.5)+
         ggtitle("Submissions"))
 
-# todo FIX properly
-
-print("Correlations:")
-print(cor(resultData$Systole, resultData$Systole.fit, use="complete.obs"))
-print(cor(resultData$Diastole, resultData$Diastole.fit, use="complete.obs"))
-
+# Report on results
+cat("Correlations on",sum((caseData$Dataset == "train")),"cases:",fill=T)
+diastole_mean <- sapply(as.data.frame(preds_diastole[,which(caseData$Dataset == "train")]), mean)
+systole_mean <- sapply(as.data.frame(preds_systole[,which(caseData$Dataset == "train")]), mean)
+print(cor(caseData$Systole[which(caseData$Dataset == "train")], systole_mean, use="complete.obs"))
+print(cor(caseData$Diastole[which(caseData$Dataset == "train")], diastole_mean, use="complete.obs"))
 
 # TODO FIX properly
-
+stop("Fix CRPS reporting")
 # Report on Kaggle's CRPS score
 # Can probably be done much faster by operating on the whole matrix at once
 trainProbabilities <- createProbabilities(results_Train)
@@ -500,5 +490,3 @@ for (i in seq(nrow(results_Train))) {
 }
 crps <- crps/nrow(trainProbabilities)/600
 cat("CRPS score on train set:", crps,fill=T)
-
-# TODO perhaps to cross validation 
