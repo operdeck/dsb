@@ -32,7 +32,7 @@ sliceMetaData$One <- 1 # trick to do a count within the := operator of data.tabl
 sliceMetaData[, 
             c("SliceCount", "SliceIndex", "SliceOrder") := list(sum(One), 
                                                                 seq(sum(One)), 
-                                                                midOrderSeqKeepSibblingsTogether(sum(One))),
+                                                                midOrderSeq(sum(One))),
             by=c("Dataset", "Id", "ImgType")]
 playlist <- left_join(playlist, sliceMetaData, by=c("Dataset", "Id", "ImgType", "Slice")) %>% select(-One)
 
