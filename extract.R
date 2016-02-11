@@ -102,15 +102,21 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
     pixelLengthScale <- sqrt(pixelAreaScale)
     img_original <- allImages[[i]] 
     if (roi$r > 1) {
+      roi.r.scale <- roi$r/2
+      roi.r.clip <- 1.5*roi$r
       # Normalize intensity using ROI. Using only half radius because often high intensity around borders.
       intensity_mask <- drawCircle(matrix(0, nrow=dim(img_original)[1], ncol=dim(img_original)[2]), 
-                                   x=roi$x, y=roi$y, roi$r/2, col=1, fill=T)
+                                   x=roi$x, y=roi$y, roi.r.scale, col=1, fill=T)
       img_masked_to_roi <- img_original*intensity_mask # keeps only pixels inside ROI
       scale <- 1/max(img_masked_to_roi)
+      # Clip image using ROI. Using a bit larger area than ROI itself.
+      clip_mask <- drawCircle(matrix(0, nrow=dim(img_original)[1], ncol=dim(img_original)[2]), 
+                              x=roi$x, y=roi$y, roi.r.clip, col=1, fill=T)
+      img_clipped <- img_original*scale*clip_mask
       # Filter image
       blurBrushSize <- 3.75 # Size of erode/dilate mask in millimeter
       blurBrush <- makeBrush(max(1,round(blurBrushSize/pixelLengthScale)), shape= 'Gaussian', sigma=10) # 5 for "normal images" scale 0.75
-      img_filtered <- normalize(opening(img_original*scale),blurBrush) #normalize(opening(img_original*scale, blurBrush))
+      img_filtered <- normalize(opening(img_clipped),blurBrush) #normalize(opening(img_original*scale, blurBrush))
       # Threshold and segment image. Will do multiple iterations if necessary.
       otsuThreshold <- otsu(img_filtered)
       thresholdStepSize <- 0.2
@@ -148,12 +154,17 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
           if (nrow(segmentInfo) >= 1) { doneThresholding <- T}
           
           if (!hasPredefinedROI) {
-            img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, x=roi$x, y=roi$y, roi$r, "yellow", fill=FALSE, z=1),
-                                         drawCircle(toRGB(img_original),x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
-                                         toRGB(img_colourSegs),
+            img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, 
+                                                    x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
+                                         drawCircle(drawCircle(drawCircle(toRGB(img_original),
+                                                                          x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
+                                                               x=roi$x, y=roi$y, roi.r.clip, "red", fill=FALSE, z=1),
+                                                    x=roi$x, y=roi$y, roi.r.scale, "yellow", fill=FALSE, z=1),
+                                         img_colourSegs,
                                          toRGB(img_thresholded))
           } else {
-            img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, x=roi$x, y=roi$y, roi$r, "yellow", fill=FALSE, z=1),
+            img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, 
+                                                    x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
                                          toRGB(img_thresholded))
           }
           display(img_comb,all=T,method="raster")
@@ -219,8 +230,10 @@ if (!is.null(allSegments)) {
   imageList$isProcessed <- F
 }
 imageList$Random <- runif(max(imageList$Id))
-imageList$SpecialOrder <- ifelse(imageList$SliceOrder > 1, imageList$SliceOrder, 1+max(imageList$SliceOrder))
-imageList <- arrange(imageList, isProcessed, SpecialOrder, Random) %>% select(-Random, -SpecialOrder)
+# imageList$SpecialOrder <- ifelse(T, imageList$SliceOrder, 1+max(imageList$SliceOrder))
+# imageList <- arrange(imageList, isProcessed, SpecialOrder, Random) %>% select(-Random, -SpecialOrder)
+
+imageList <- arrange(imageList, isProcessed, SliceOrder, Random) %>% select(-Random)
 
 # Process images per slice. Image of the same slice (usually) have same dimensions, location etc
 
@@ -299,13 +312,14 @@ for (nextSlice in seq(nrow(sliceList))) {
     print(group_by(left_join(sliceList, 
                              mutate(unique(select(allSegments, Id, Slice)), isSegmented=TRUE), 
                              by=c("Id", "Slice")), Dataset) %>% 
-            summarise(complete = paste(round(100*sum(isSegmented, na.rm=T)/n(),2),"%",sep="" )))
+            dplyr::summarise(complete = paste(round(100*sum(isSegmented, na.rm=T)/n(),2),"%",sep="" )))
     # Plot progress
     ds <- group_by(left_join(sliceList, 
                              mutate(unique(select(allSegments, Id, Slice)), isSegmented=TRUE), 
                              by=c("Id", "Slice")), Dataset, Id) %>% 
-      summarise(complete=round(100*sum(isSegmented, na.rm=T)/n())) %>%
-      group_by(Dataset, complete) %>% summarise(n = n())
+      dplyr::summarise(complete=round(100*sum(isSegmented, na.rm=T)/n())) %>%
+      group_by(Dataset, complete) %>% 
+      dplyr::summarise(n = n())
     print(ggplot(ds, aes(x=complete, y=n, fill=Dataset))+geom_bar(stat="identity")+
             ggtitle("Completeness of segmentation per Id"))
     # drop Dataset again - was only temp
