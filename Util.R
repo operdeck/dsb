@@ -198,16 +198,16 @@ createImagePredictSet <- function(ds)
                lengthMultiplier = sqrt(areaMultiplier),
                
                area = s.area*areaMultiplier,
-               #area.ellipse = pi*s.radius.min*s.radius.max*areaMultiplier,
+               area.ellipse = pi*s.radius.min*s.radius.max*areaMultiplier,
                
-               #perimeter = s.perimeter*lengthMultiplier,
-               #radius.mean = s.radius.mean*lengthMultiplier,
-               #radius.min = s.radius.min*lengthMultiplier,
-               #radius.max = s.radius.max*lengthMultiplier,
-               #radius.var = sqrt(s.radius.sd)*lengthMultiplier,
+               perimeter = s.perimeter*lengthMultiplier,
+               radius.mean = s.radius.mean*lengthMultiplier,
+               radius.min = s.radius.min*lengthMultiplier,
+               radius.max = s.radius.max*lengthMultiplier,
+               radius.var = sqrt(s.radius.sd)*lengthMultiplier,
                
-               #majoraxis = m.majoraxis*lengthMultiplier,
-               #roundness = 4*pi*area/(perimeter^2),
+               majoraxis = m.majoraxis*lengthMultiplier,
+               roundness = 4*pi*area/(perimeter^2),
                
                slicePct = SliceIndex/SliceCount) %>%
     select(-starts_with("PixelSpacing."),

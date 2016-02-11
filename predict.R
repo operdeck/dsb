@@ -251,7 +251,6 @@ sampleIds <- sample(unique(trainVolumes$Id), 10)
 # Data cleansing: outlier detection and missing value imputation
 zRange <- range(0: quantile(imageData$area, na.rm=T, p=0.90)) 
 for (plotId in unique(imageData$Id)) {
-  cat("Outlier detection and missing value imputation for",plotId,fill=T)
   data3D <- imageData[Id == plotId, sapply(imageData, is.numeric), with=F]
   
   # View raw data - with missing and outliers
@@ -282,10 +281,14 @@ for (plotId in unique(imageData$Id)) {
       outliers <- which(!is.na(d))[which(outlier.scores > 3.0)] # somewhat arbitrary
       nOutliers <- nOutliers + length(outliers)
       outlierTimes <- similarityData[Slice==s]$Time[outliers]
-      data3D[Slice==t & Time %in% outlierTimes, area := NA]
+      data3D[Slice==s & Time %in% outlierTimes, area := NA]
     }
   }
-  cat(nOutliers, "outliers for Id", plotId, fill=T)
+  outlierRatio <- nOutliers/(length(unique(similarityData$Time))*length(unique(similarityData$Slice)))
+  missingRatio <- sum(is.na(data3D$area))/length(data3D$area)
+  cat("Id", plotId, 
+      "outliers", paste(round(100*outlierRatio,1),"%",sep=""), 
+      "missing", paste(round(100*missingRatio,1),"%",sep=""), fill=T)
   
   #   outlier.scores <- lofactor(scale(similarityData[which(complete.cases(similarityData))]), k=5)
   #   #plot(density(outlier.scores))
@@ -298,15 +301,12 @@ for (plotId in unique(imageData$Id)) {
                   main=paste("Outliers Removed Id=",plotId), 
                   zlim=zRange))
   
-  # Missing imputation
+  # Missing imputation (kNN doesnt work with many NAs)
+  preds <- predict(preProcess(data3D, method="bagImpute"), newdata=data3D)
+  data3D[,area := ifelse(is.na(area), preds$area, area)]                   # normal 'bag' imputation
+  data3D[,area := ifelse(is.na(area), mean(area, na.rm=T), area),by=Slice] # there could still be NA/NaN's left
+  data3D[,area := ifelse(is.na(area), mean(area, na.rm=T), area)]          # first try by Slice, if still missing, do global
   
-  # this effectively smoothed and imputes
-  # should we help bagging and add some 'shifted' rows of area data?
-  # only set the missing values, not all
-  # kNN doesnt work when there are too many missings
-  preds <- predict(preProcess(data3D, method="bagImpute"), newdata=data3D) # [,!sapply(data3D, anyNA),with=F]
-  data3D$area <- ifelse(is.na(data3D$area), preds$area, data3D$area)
-
   print(wireframe(area ~ Time*SliceLocation, data=data3D,
                   shade=T, col.regions = terrain.colors(100), 
                   main=paste("Missings Imputed Id=",plotId), 
@@ -316,6 +316,7 @@ for (plotId in unique(imageData$Id)) {
   for (i in seq(nrow(data3D))) {
     imageData[Id == data3D[i]$Id & Slice == data3D[i]$Slice & Time == data3D[i]$Time, area := data3D[i]$area ]
   }
+  imageData[Id == data3D[i]$Id, c("RatioOutlier","RatioMissing") := list(outlierRatio,missingRatio)]
 }
 
 # for later use
@@ -332,12 +333,14 @@ print(ggplot(filter(imageData, !is.na(pLV) & Id %in% sampleIds), aes(x=Time, y=a
 
 # Aggregate up to Time level
 timeData <- group_by(imageData, Id, Time) %>%
-  dplyr::summarise(volume     = sum(SliceThickness*area, na.rm=T),
-            #volumeEllipse = sum(SliceThickness*area.ellipse, na.rm=T),
-            #volumeMax  = sum(SliceThickness*pi*radius.max^2, na.rm=T),
-            #volumeMin  = sum(SliceThickness*pi*radius.min^2, na.rm=T),
-            #volumeMean = sum(SliceThickness*pi*radius.mean^2, na.rm=T),
-            isLV = any(isLV))
+  dplyr::summarise(volume = sum(SliceThickness*area, na.rm=T),
+                   lvConfidence = mean(pLV, na.rm=T),
+                   segmentMissingRatio = mean(RatioMissing, na.rm=T),
+                   #volumeEllipse = sum(SliceThickness*area.ellipse, na.rm=T),
+                   #volumeMax  = sum(SliceThickness*pi*radius.max^2, na.rm=T),
+                   #volumeMin  = sum(SliceThickness*pi*radius.min^2, na.rm=T),
+                   #volumeMean = sum(SliceThickness*pi*radius.mean^2, na.rm=T),
+                   isLV = any(isLV))
 print(ggplot(filter(timeData, Id %in% sampleIds), aes(x=Time, y=volume, colour=factor(Id)))+geom_line()+geom_point()+
         ggtitle("Volume over Time"))
 
@@ -352,6 +355,9 @@ caseData <- left_join(caseList, group_by(timeData, Id) %>%
                           max_volume = max(volume, na.rm=T),
                           min_volume = min(volume, na.rm=T),
                           sd_volume  = sd(volume, na.rm=T),
+                          
+                          lvConfidence = mean(lvConfidence, na.rm=T),
+                          segmentMissingRatio = mean(segmentMissingRatio, na.rm=T),
                           
                           #max_volumeEllipse = max(volumeEllipse, na.rm=T),
                           #min_volumeEllipse = min(volumeEllipse, na.rm=T),
@@ -369,12 +375,18 @@ caseData <- left_join(caseList, group_by(timeData, Id) %>%
                       by="Id")
 cat("Total",nrow(caseData),"cases, of which",nrow(filter(caseData,isLV)),"have a detected LV",fill=T)
 
+# Some quick summaries on the data quality
+print(ggplot(data=caseData, aes(x=segmentMissingRatio, colour=PatientsSex))+geom_density())
+print(ggplot(data=caseData, aes(x=lvConfidence, colour=PatientsSex))+geom_density())
+print(ggplot(data=caseData, aes(x=segmentMissingRatio,y=lvConfidence, colour=PatientsSex))+geom_point())
+
 # Train data
 caseData <- left_join(caseData, trainVolumes, by="Id")
 
 # All cases (dev/train/test) with engineered extra features
 casePredictSet <- select(caseData, 
-                         -Id, -Dataset, -ImgType, -isLV)
+                         -Id, -Dataset, -ImgType, -isLV,
+                         -lvConfidence, -segmentMissingRatio)
 # casePredictSet <- mutate(casePredictSet, # extra vars
 #                          maxVolume2 = max_volumeEllipse^2,
 #                          minVolume2 = max_volumeEllipse^2,
@@ -383,10 +395,14 @@ casePredictSet <- select(caseData,
 
 ### Build model (caret)
 
-casePredictSetTrain <- casePredictSet[!is.na(casePredictSet$Systole) & !is.na(casePredictSet$Diastole)] # set with known outcomes
+casePredictSetTrain <- filter(casePredictSet, 
+                              !is.na(casePredictSet$Systole),
+                              !is.na(casePredictSet$Diastole),
+                              caseData$segmentMissingRatio < 0.60) # exclude very bad images from prediction set
 
 # Run repeatedly to get a distribution of the predictions
 nSamples <- 40
+doTuning <- T
 for (i in seq(nSamples)) {
   casePredictValidationRows <- sample.int(nrow(casePredictSetTrain), 
                                           validationPercentage*nrow(casePredictSetTrain))
@@ -394,7 +410,6 @@ for (i in seq(nSamples)) {
   casePredictSetTrainDev <- casePredictSetTrain[-casePredictValidationRows,] # for training the models
   
   # Predict with Caret
-  doTuning <- F
   if (doTuning) {
     fitControl <- trainControl(
       method = "repeatedcv", # 10-fold repeated CV
@@ -407,9 +422,11 @@ for (i in seq(nSamples)) {
     systole_model <- train(Systole ~ ., data = select(casePredictSetTrainDev, -Diastole), 
                            method = "gbm", trControl = fitControl, verbose=F, tuneGrid=gbmGrid)
     print(ggplot(systole_model))
+    print(ggplot(varImp(systole_model)))
     diastole_model <- train(Diastole ~ ., data = select(casePredictSetTrainDev, -Systole), 
                             method = "gbm", trControl = fitControl, verbose=F, tuneGrid=gbmGrid)
     print(ggplot(diastole_model))
+    print(ggplot(varImp(diastole_model)))
   } else {
     fixedTuningParams <- data.frame(interaction.depth = 3,
                                     n.trees = 50,
@@ -473,18 +490,16 @@ systole_mean <- sapply(as.data.frame(preds_systole[,which(caseData$Dataset == "t
 print(cor(caseData$Systole[which(caseData$Dataset == "train")], systole_mean, use="complete.obs"))
 print(cor(caseData$Diastole[which(caseData$Dataset == "train")], diastole_mean, use="complete.obs"))
 
-# TODO FIX properly
-stop("Fix CRPS reporting")
 # Report on Kaggle's CRPS score
-# Can probably be done much faster by operating on the whole matrix at once
-trainProbabilities <- createProbabilities(results_Train)
+validateRange <- c(2*(which(caseData$Dataset == "train"))-1, 2*(which(caseData$Dataset == "train")))
+trainProbabilities <- probs[min(validateRange):max(validateRange),]
 crps <- 0
-for (i in seq(nrow(results_Train))) {
+for (i in seq(nrow(trainVolumes))) {
   probs1 <- as.vector(as.matrix(trainProbabilities[2*i-1,2:ncol(trainProbabilities)]))
-  truth1 <- ifelse(seq(NPROBS) >= results_Train$Diastole[i], 1, 0)
+  truth1 <- ifelse(seq(NPROBS) >= trainVolumes$Diastole[i], 1, 0)
   
   probs2 <- as.vector(as.matrix(trainProbabilities[2*i,2:ncol(trainProbabilities)]))
-  truth2 <- ifelse(seq(NPROBS) >= results_Train$Systole[i], 1, 0)
+  truth2 <- ifelse(seq(NPROBS) >= trainVolumes$Systole[i], 1, 0)
   
   crps <- crps + sum((probs1 - truth1)^2, na.rm=T) + sum((probs2 - truth2)^2, na.rm=T)
 }
