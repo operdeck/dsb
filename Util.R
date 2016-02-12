@@ -115,29 +115,33 @@ getIdList <- function(type = "sax", playlist=NULL)
 # # and only 0 or 1 segments per image, such that the overal distance to the Left Ventricle
 # # is minimized.
 # TODO - not tested, not finished
-getImagesWithLVSegments <- function(slice)
-{
-  # for ALL segments within the slice
-  for (lvCandidateIndex in seq(nrow(slice))) {
-    # for ALL other segments (at once)
-    # calculate distance to lvCandidate
-    slice$distToLVCandidate <- sqrt((slice$m.cx - slice$m.cx[lvCandidateIndex])^2 + 
-                                      (slice$m.cy - slice$m.cy[lvCandidateIndex])^2)
-    # identify the segment with smallest distance per Image
-    identifiedLVSegments <- group_by(slice, Time) %>% summarise(segLV = segIndex[which.min(distToLVCandidate)])
-    slice <- left_join(slice, identifiedLVSegments, by=c("Time"))
-    slice$isLV <- (slice$segIndex == slice$segLV)
-    
-    # calculate sum of pLV or something for the slices...
-    # keep track of the lowest pLV sum
-  }
-}
+# getImagesWithLVSegments <- function(slice)
+# {
+#   # for ALL segments within the slice
+#   for (lvCandidateIndex in seq(nrow(slice))) {
+#     # for ALL other segments (at once)
+#     # calculate distance to lvCandidate
+#     slice$distToLVCandidate <- sqrt((slice$m.cx - slice$m.cx[lvCandidateIndex])^2 + 
+#                                       (slice$m.cy - slice$m.cy[lvCandidateIndex])^2)
+#     # identify the segment with smallest distance per Image
+#     identifiedLVSegments <- group_by(slice, Time) %>% summarise(segLV = segIndex[which.min(distToLVCandidate)])
+#     slice <- left_join(slice, identifiedLVSegments, by=c("Time"))
+#     slice$isLV <- (slice$segIndex == slice$segLV)
+#     
+#     # calculate sum of pLV or something for the slices...
+#     # keep track of the lowest pLV sum
+#   }
+# }
 
 # TODO: add variation over time
 # add rank of area (e.g.) vs other segments, maybe also over time
+
 # Create segment prediction dataset
 createSegmentPredictSet <- function(ds)
 {
+  ds[, areaRank := frankv(s.area, order=-1L, ties.method="dense"), by=c("Id","Slice","Time")] # fast rank (data.table)
+  ds[, areaRelSize := s.area/sum(s.area,na.rm=T), by=c("Id","Slice","Time")] # relative size
+  
   ds <- mutate(ds,
                areaMultiplier = PixelSpacing.x * PixelSpacing.y * 0.01, # 1 mL = 1000 mm3
                lengthMultiplier = sqrt(areaMultiplier),
@@ -151,6 +155,8 @@ createSegmentPredictSet <- function(ds)
                radius.max = s.radius.max*lengthMultiplier,
                radius.var = sqrt(s.radius.sd)*lengthMultiplier,
                
+               roi.size = pi*ROI.r*ROI.r*areaMultiplier,
+               
                majoraxis = m.majoraxis*lengthMultiplier,
                roundness = 4*pi*area/(perimeter^2),
                
@@ -158,12 +164,14 @@ createSegmentPredictSet <- function(ds)
     dplyr::rename(eccentricity = m.eccentricity,
            theta = m.theta) %>%
     select(-FileName,               # is an ID
+           -segIndex,               # is (part of) ID
            -PixelSpacing.x,         # used to build another predictor
            -PixelSpacing.y,         # used to build another predictor
            -areaMultiplier,         # is temporary variable
            -lengthMultiplier,       # is temporary variable
            -m.majoraxis,            # is orientation dependent
            -starts_with("s."),      # renamed and scaled
+           -starts_with("ROI."),    # radius used, others are position dependent
            -m.cx, -m.cy,            # is position dependent
            -UUID,                   # is an ID
            -Id, -Slice, -Time,      # is (part of) ID 
@@ -174,7 +182,7 @@ createSegmentPredictSet <- function(ds)
   
   # Keep only numerics plus the outcome (logic)
   ds <- ds[,sapply(ds, function(c) { return (is.numeric(c) | is.logical(c)) }),with=F] # keep only numerics
-  
+
   # ID slice img   seg x/y <segment details>
   #
   #  1     1   1   0.1 0.2   0.5 0.6 

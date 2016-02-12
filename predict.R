@@ -1,17 +1,11 @@
 # Make predictions of Systole and Diastole for all datasets.
+
 # Uses "segments-classified.csv" to create a model to help find LV segments, then filters and
 # aggregates the segment data to have one set of meta-info per ID. Combines this with the 
 # train set to create a model for the Systole and Diastole volumes.
 
-# Volume = sum over slices *for a certain Time*
-# Group by time:
-#   Sum area(t) over slices (take scale and distance into account)
-# This gives a view of volume over time by ID
+# Volume = sum area * slice thickness over slices for a certain Time
 # Min and Max volumes are the systole/diastole values
-
-# Additional Meta data
-# patient data contains age and sex information in DICOM tags
-# seems useful in the final models!
 
 source("util.R")
 
@@ -21,17 +15,18 @@ library(lattice)
 require(caret)
 library(DMwR) # outlier detection
 
-# source("https://bioconductor.org/biocLite.R")
-# biocLite("impute"
-         
 # Threshold for LV segment probability
 pSegmentThreshold <- 0.2
 
-# Confidence level for predictions
-confidence <- 0.95
+# Threshold for missing segments (excludes cases from being used in train set of final models)
+# (missing ratio should be lower than this threshold)
+segmentMissingThreshold <- 0.80
 
 # Used both in segment and case prediction
 validationPercentage <- 0.20
+
+# Max Volume (mL) - fixed value used in submissions
+MAXVOLUME <- 600
 
 # Identify the LV segments in the whole dataset by creating a model
 # from the (manually) identified ones
@@ -140,40 +135,16 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   
   # Build up prediction set by creating derived variables and dropping non-predictors
   segClassificationSetIDs <- select(segClassificationSet, Id, Slice, Time)
-  segClassificationSet <- createSegmentPredictSet(filter(left_join(segClassificationSet, 
-                                                                   imageList, by=c("Id","Slice","Time")), 
-                                                         !is.na(isLV)))
-  
-  # quick plots to verify results
-  
-  # TODO: (trigonometric) interpolation & outlier detection
-  # NOTE: the graphs of area vs time have missing data points as well
-  # as outliers (typically near zero). These should be fixed somehow through
-  # interpolation or other means.
-  # ID 403/Slice 10 shows near-zero's for time 9..16
-  # ID 334/Slice 15 shows missing values for time 10..15
-  # ID 504/Slice 17 shows a near perfect graph
-  # See for example:
-  #  http://stats.stackexchange.com/questions/63233/fourier-trigonometric-interpolation
-  
-  # l <- head(unique(select(segClassificationSet, Id, Slice)),5)
-  # for (i in seq(nrow(l))) {
-  #   slice <- filter(segClassificationSet, Id==l$Id[i], Slice==l$Slice[i])
-  #   
-  #   plotSlice(filter(slice, isLV))
-  # }
+  segClassificationSetWithMetaData <- left_join(segClassificationSet, 
+                                                imageList, by=c("Id","Slice","Time"))
+  setkeyv(segClassificationSetWithMetaData, c("Id","Slice","Time","segIndex")) # TODO why are there duplicates? roughly 2x.
+  segClassificationSet <- createSegmentPredictSet(filter(unique(segClassificationSetWithMetaData), !is.na(isLV)))
   
   # Build up the data set for training and classification
-  
-  # We keep the meta-attributes as these are useful for the further roll-up
-  # allSegments <- select(allSegments, 
-  #                       -m.cx, -m.cy, -distToROI)
-  
   valSet <- sample.int(nrow(segClassificationSet), validationPercentage*nrow(segClassificationSet))
   trainDataPredictorsOnly <- select(segClassificationSet, -isLV)
   
   cat("Building segment model with",length(names(trainDataPredictorsOnly)),"predictors",fill=T)
-  
   uniVariateAnalysis <- data.frame(Predictor=names(trainDataPredictorsOnly),
                                    validation=sapply(trainDataPredictorsOnly, 
                                                      function(p) {auc(segClassificationSet$isLV[valSet], p[valSet])}),
@@ -189,7 +160,7 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   
   leftVentricleSegmentModel <- xgboost(data = data.matrix(trainDataPredictorsOnly[-valSet]), 
                                        label = segClassificationSet$isLV[-valSet], 
-                                       max.depth = 2, eta = 0.1, nround = 100,
+                                       max.depth = 6, eta = 0.05, nround = 100,
                                        objective = "binary:logistic", 
                                        missing=NaN, verbose=0)
   imp_matrix <- xgb.importance(feature_names = names(trainDataPredictorsOnly), model = leftVentricleSegmentModel)
@@ -398,11 +369,13 @@ casePredictSet <- select(caseData,
 casePredictSetTrain <- filter(casePredictSet, 
                               !is.na(casePredictSet$Systole),
                               !is.na(casePredictSet$Diastole),
-                              caseData$segmentMissingRatio < 0.60) # exclude very bad images from prediction set
+                              caseData$segmentMissingRatio < segmentMissingThreshold) # exclude very bad images from prediction set
 
-# Run repeatedly to get a distribution of the predictions
-nSamples <- 40
-doTuning <- T
+# Run repeatedly to get a distribution of the predictions and a validation error indication
+nSamples <- 100
+doTuning <- F
+rmse_systole <- rep(NA, nSamples)
+rmse_diastole <- rep(NA, nSamples)
 for (i in seq(nSamples)) {
   casePredictValidationRows <- sample.int(nrow(casePredictSetTrain), 
                                           validationPercentage*nrow(casePredictSetTrain))
@@ -428,8 +401,8 @@ for (i in seq(nSamples)) {
     print(ggplot(diastole_model))
     print(ggplot(varImp(diastole_model)))
   } else {
-    fixedTuningParams <- data.frame(interaction.depth = 3,
-                                    n.trees = 50,
+    fixedTuningParams <- data.frame(interaction.depth = 2,
+                                    n.trees = 37,
                                     shrinkage = 0.1,
                                     n.minobsinnode = 20)
     systole_model <- train(Systole ~ ., data = select(casePredictSetTrainDev, -Diastole), 
@@ -453,21 +426,27 @@ for (i in seq(nSamples)) {
     preds_systole <- rbind(preds_systole, preds_systole_one_sample)
     preds_diastole <- rbind(preds_diastole, preds_diastole_one_sample)
   }
+  
+  # check predictions on val set
+  val_preds_systole <- predict(systole_model, newdata=casePredictSetTrainVal, na.action="na.include")
+  rmse_systole[i] <- sqrt(mean((val_preds_systole-casePredictSetTrainVal$Systole)^2,na.rm=TRUE))
+  val_preds_diastole <- predict(diastole_model, newdata=casePredictSetTrainVal, na.action="na.include")
+  rmse_diastole[i] <- sqrt(mean((val_preds_diastole-casePredictSetTrainVal$Diastole)^2,na.rm=TRUE))
 }
 dimnames(preds_systole) <- list(1:nSamples,caseData$Id)
 dimnames(preds_diastole) <- list(1:nSamples,caseData$Id)
-
-# Max Volume (mL) - fixed value used in submissions
-NPROBS <- 600
+cat("Average error on Systole on validation set:", mean(rmse_systole))
+cat("Average error on Diastole on validation set:", mean(rmse_diastole))
+print(ggplot(gather(data.frame(rmse_systole, rmse_diastole),measure,RMSE), aes(x=RMSE, colour=measure))+geom_density()+ggtitle("RMSE on Validation Set"))
 
 # Cumulative probabilities, for all cases
-probs <- matrix(nrow = 2*nrow(casePredictSet), ncol = NPROBS)
+probs <- matrix(nrow = 2*nrow(casePredictSet), ncol = MAXVOLUME)
 for (i in seq(nrow(casePredictSet))) {
-  probs[2*i-1,] <- sapply(seq(NPROBS), function(v) { return(sum(preds_diastole[,i] < v)/nSamples) })
-  probs[2*i,] <- sapply(seq(NPROBS), function(v) { return(sum(preds_systole[,i] < v)/nSamples) })
+  probs[2*i-1,] <- sapply(seq(MAXVOLUME), function(v) { return(sum(preds_diastole[,i] < v)/nSamples) })
+  probs[2*i,] <- sapply(seq(MAXVOLUME), function(v) { return(sum(preds_systole[,i] < v)/nSamples) })
 }
 probs <- data.frame(Id = as.vector(sapply(caseData$Id,function(n){paste(n,c('Diastole','Systole'),sep="_")})), probs)
-names(probs) <- c('Id', paste("P",0:(NPROBS-1),sep=""))
+names(probs) <- c('Id', paste("P",0:(MAXVOLUME-1),sep=""))
 
 # Submit results
 submitRange <- c(2*(which(caseData$Dataset != "train"))-1, 2*(which(caseData$Dataset != "train")))
@@ -496,12 +475,12 @@ trainProbabilities <- probs[min(validateRange):max(validateRange),]
 crps <- 0
 for (i in seq(nrow(trainVolumes))) {
   probs1 <- as.vector(as.matrix(trainProbabilities[2*i-1,2:ncol(trainProbabilities)]))
-  truth1 <- ifelse(seq(NPROBS) >= trainVolumes$Diastole[i], 1, 0)
+  truth1 <- ifelse(seq(MAXVOLUME) >= trainVolumes$Diastole[i], 1, 0)
   
   probs2 <- as.vector(as.matrix(trainProbabilities[2*i,2:ncol(trainProbabilities)]))
-  truth2 <- ifelse(seq(NPROBS) >= trainVolumes$Systole[i], 1, 0)
+  truth2 <- ifelse(seq(MAXVOLUME) >= trainVolumes$Systole[i], 1, 0)
   
   crps <- crps + sum((probs1 - truth1)^2, na.rm=T) + sum((probs2 - truth2)^2, na.rm=T)
 }
-crps <- crps/nrow(trainProbabilities)/600
+crps <- crps/nrow(trainProbabilities)/MAXVOLUME
 cat("CRPS score on train set:", crps,fill=T)
