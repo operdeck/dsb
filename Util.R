@@ -80,6 +80,17 @@ plotSlice <- function(slice) {
   }
 }
 
+showSegmentLabels <- function(segments, textColour="red") {
+  if (nrow(segments) > 0) {
+    for (i in 1:nrow(segments)) {
+      text(x = segments$m.cx[i], y = segments$m.cy[i], 
+           label = segments$segIndex[i], col = textColour)
+    }
+  }
+}
+
+
+
 getImageList <- function(type = "sax", playlist=NULL)
 {
   if (is.null(playlist)) {
@@ -142,6 +153,11 @@ createSegmentPredictSet <- function(ds)
   ds[, areaRank := frankv(s.area, order=-1L, ties.method="dense"), by=c("Id","Slice","Time")] # fast rank (data.table)
   ds[, areaRelSize := s.area/sum(s.area,na.rm=T), by=c("Id","Slice","Time")] # relative size
   
+  dsBySlice <- unique(select(ds,Id,Slice))
+  cat("DS has",nrow(dsBySlice),"unique slices of avg size",nrow(ds)/nrow(dsBySlice),fill=T)
+  #for (i in nrow(dsBySlice)) {
+  #  segments <- which(ds[])
+  
   ds <- mutate(ds,
                areaMultiplier = PixelSpacing.x * PixelSpacing.y * 0.01, # 1 mL = 1000 mm3
                lengthMultiplier = sqrt(areaMultiplier),
@@ -156,6 +172,7 @@ createSegmentPredictSet <- function(ds)
                radius.var = sqrt(s.radius.sd)*lengthMultiplier,
                
                roi.size = pi*ROI.r*ROI.r*areaMultiplier,
+               area.rel = area/roi.size,
                
                majoraxis = m.majoraxis*lengthMultiplier,
                roundness = 4*pi*area/(perimeter^2),

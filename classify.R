@@ -1,4 +1,4 @@
- # Manual identification of LV segments with the purpose of creating a prediction dataset
+# Manual identification of LV segments with the purpose of creating a prediction dataset
 # to do this automatically on the full dataset. 
 # Creates "segments-predict.csv" with same data for only the (correctly) identified segments of
 # each file / slice / Id.
@@ -30,13 +30,6 @@ redoClassificationIdList <- c() # list the ID's here
 #  train 7, slice 49 : almost all images OK but segment 13 (or so) is incorrect
 
 
-showSegmentLabels <- function(imageDS) {
-  for (i in 1:nrow(imageDS)) {
-    text(x = imageDS$m.cx[i], y = imageDS$m.cy[i], 
-         label = imageDS$segIndex[i], col = "red")
-  }
-}
-
 showSingleImage <- function(segments) {
   f <- getImageFile(segments)
   if (!file.exists(f)) {
@@ -62,13 +55,14 @@ showSingleImage <- function(segments) {
   segFile <- getSegmentedImageFile(segments[1,])
   if (file.exists(segFile)) {
     segImg <- readImage(segFile)
-    EBImage::display(EBImage::combine(img,
-                                      (segImg+img)/2),all=T,method="raster")
+    img_with_segment_overlay <- drawCircle((segImg+img)/2,
+                                           x=mean(segments$ROI.x), y=mean(segments$ROI.y), mean(segments$ROI.r),
+                                           col="blue")
+    EBImage::display(EBImage::combine(img, img_with_segment_overlay),all=T,method="raster")
   } else {
     EBImage::display(img,all=T,method="raster")
   }
   text(10,20,getImageFile(segments),col="yellow",pos=4)
-  showSegmentLabels(segments)
 }
 
 # Show all images of this slice
@@ -90,7 +84,7 @@ showAllSliceImages <- function(slice) {
       segImg <- readImage(segFile)
       img <- (toRGB(img)+segImg)/2
     }
-
+    
     radii <- c(slice$s.radius.mean[seg], slice$s.radius.mean[seg]+1, slice$s.radius.min[seg], slice$s.radius.max[seg])
     for (k in seq(length(radii))) {
       if (radii[k] >= 1) {
@@ -109,28 +103,31 @@ showAllSliceImages <- function(slice) {
 # Build (simple) segment prediction model and apply to test set
 createSegmentModelAndApply <- function(train, test)
 {
-  cat("LV model built out of", sum(complete.cases(train)), 
-      "complete cases from total",nrow(train),fill=T)
-  train <- train[complete.cases(train),]
+  if (is.null(train)) {
+    print("No data for LV model yet")
+  } else {
+    cat("LV model built out of", sum(complete.cases(train)), 
+        "complete cases from total",nrow(train),fill=T)
+    train <- train[complete.cases(train),]
+  }
   preds <- rep(1.0/nrow(test), nrow(test))
-  if(is.null(train) || nrow(train) < 10000) {
+  if(is.null(train) || nrow(train) < 1000) {
     return (preds)
   }
-
-  segments <- test$segIndex
   
-  train <- left_join(filter(train, !is.na(isLV)), imageList, by=c("Id", "Slice", "Time"))
-  test <- test[, names(test) %in% setdiff(names(train), "isLV"), with=F]
-
-  train <- createSegmentPredictSet(train)
+  segments <- test$segIndex
+  train <- createSegmentPredictSet( filter(train, !is.na(isLV)))
   test <- createSegmentPredictSet(test)
+  
+  cat("Predictors:",names(train),fill=T)
   
   leftVentricleSegmentModel <- xgboost(data = data.matrix(select(train, -isLV)),
                                        missing=NaN,
                                        label = train$isLV, 
                                        max.depth = 4, eta = 0.1, nround = 100,
                                        objective = "binary:logistic", verbose=0)
-
+  xgb.save(leftVentricleSegmentModel, 'lv.xgb.model')
+  
   imp_matrix <- xgb.importance(feature_names = names(select(train, -isLV)), model = leftVentricleSegmentModel)
   print(xgb.plot.importance(importance_matrix = imp_matrix))
   
@@ -188,8 +185,13 @@ for (sliceIndex in seq(nrow(promptSlices))) {
     next
   }
   # Create simple segment model and predict pLV on whole slice here
-  slice$pLV <- createSegmentModelAndApply(segPredictSet, slice)
-
+  slice$pLV <- createSegmentModelAndApply(left_join(segPredictSet, 
+                                                    select(allSegments, 
+                                                           -starts_with("m."),
+                                                           -starts_with("s.")), 
+                                                    by=c("Id", "Slice", "Time", "UUID")), 
+                                          slice)
+  
   # list of images in this slice that need processing
   unProcessedImageIndices <- unique(slice$Time)
   while (length(unProcessedImageIndices) > 0) {
@@ -211,6 +213,8 @@ for (sliceIndex in seq(nrow(promptSlices))) {
     print("Segments with prediction of being the Left Ventricle:")
     print(head(sort(segmentProbs, decreasing=T), 5))
     showSingleImage(segmentsFirstImage) 
+    showSegmentLabels(segmentsFirstImage)
+    showSegmentLabels(segmentsFirstImage[which.max(segmentProbs),],textColour="green")
     indexOfLVSegment <- readInteger(paste("Identify Left Ventricle in image",
                                           firstImageIndex,
                                           "(0=none, -1=skip image, -2=skip slice): "))
@@ -248,10 +252,10 @@ for (sliceIndex in seq(nrow(promptSlices))) {
       
       # Show the (tentative) results with segment probabilities for review and prompt
       if (length(imagesIndicesWithTentativeLV) > 0) {
-        plotSlice(rename(filter(segmentsWithTentativeLV, isLV), 
-                         radius.mean = s.radius.mean,
-                         radius.max = s.radius.max,
-                         radius.min = s.radius.min))
+        plotSlice(dplyr::rename(filter(segmentsWithTentativeLV, isLV), 
+                                radius.mean = s.radius.mean,
+                                radius.max = s.radius.max,
+                                radius.min = s.radius.min))
         print("Prediction of being the Left Ventricle in plot:")
         segmentProbs <- round(filter(segmentsWithTentativeLV, isLV)$pLV, 3)
         ncol <- ceiling(sqrt(length(segmentProbs)))

@@ -24,6 +24,12 @@
 
 source("util.R")
 
+if (file.exists('lv.xgb.model')) {
+  leftVentricleSegmentModel <- xgb.load('lv.xgb.model')
+} else {
+  leftVentricleSegmentModel <- NULL
+}
+
 # see bio image detection stuff
 # http://bioconductor.wustl.edu/bioc/vignettes/EBImage/inst/doc/AnalysisWithEBImage.pdf
 
@@ -90,6 +96,8 @@ findROI <- function (allImages, imgMetaData) {
   roi <- list(x = mean(rois$m.cx), y = mean(rois$m.cy), r = mean(rois$radius))
 }
 
+modif1 = function(x) sin((x - 1.2)^3) + 1
+
 segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
   allImages <- readAllImages(imgMetaData)  
   hasPredefinedROI <- !is.null(roi)
@@ -112,16 +120,15 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
       # Clip image using ROI. Using a bit larger area than ROI itself.
       clip_mask <- drawCircle(matrix(0, nrow=dim(img_original)[1], ncol=dim(img_original)[2]), 
                               x=roi$x, y=roi$y, roi.r.clip, col=1, fill=T)
-      img_clipped <- img_original*scale*clip_mask
+      img_clipped <- modif1(img_original*scale*clip_mask)
       # Filter image
       blurBrushSize <- 3.75 # Size of erode/dilate mask in millimeter
       blurBrush <- makeBrush(max(1,round(blurBrushSize/pixelLengthScale)), shape= 'Gaussian', sigma=10) # 5 for "normal images" scale 0.75
       img_filtered <- normalize(opening(img_clipped),blurBrush) #normalize(opening(img_original*scale, blurBrush))
       # Threshold and segment image. Will do multiple iterations if necessary.
+      #plot(hist(img_filtered,xlim = c(0, 1),box = T))
       otsuThreshold <- otsu(img_filtered)
-      thresholdStepSize <- 0.2
-      thresholds <- seq(otsuThreshold, 1, by=thresholdStepSize) # hopefully the first one is good, but never now...
-      if (otsuThreshold > thresholdStepSize) { thresholds <- c(thresholds, seq(otsuThreshold-thresholdStepSize, 0, by=-thresholdStepSize)) }
+      thresholds <- seq(otsuThreshold, 1, by=0.1) # otsu first, then the rest
       thresholdIndex <- 0
       doneThresholding <- F
       segmentInfo <- NULL
@@ -150,25 +157,39 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
           segmentInfo <- filter(segmentInfo, distToROI < roi$r)
           img_colourSegs <- colorLabels(rmObjects(img_segmented, 
                                                   setdiff(seq(max(img_segmented)),segmentInfo$segIndex)))
-          # assume a good segmentation has at least 1 segment
-          if (nrow(segmentInfo) >= 1) { doneThresholding <- T}
+          # Use LV model (if available) to evaluate quality of segmentation
+          if (!is.null(leftVentricleSegmentModel)) {
+            predictors <- createSegmentPredictSet(select(segmentInfo, -isProcessed))
+            probLV <- round(predict(leftVentricleSegmentModel, data.matrix(predictors), missing=NaN),3)
+            names(probLV) <- segmentInfo$segIndex
+            print(head(sort(probLV, decreasing=T), 5))
+            doneThresholding <- (max(probLV) > 0.4)
+            mostLikelySegment <- segmentInfo$segIndex[which.max(probLV)]
+          } else {
+            doneThresholding <- (nrow(segmentInfo) >= 2)
+            mostLikelySegment <- NULL
+          }
           
           if (!hasPredefinedROI) {
-            img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, 
+            img_comb <- EBImage::combine(toRGB(img_thresholded), # will get segment indices overlayed
+                                         drawCircle((img_colourSegs+toRGB(scale*img_original))/2, 
                                                     x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
                                          drawCircle(drawCircle(drawCircle(toRGB(img_original),
                                                                           x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
                                                                x=roi$x, y=roi$y, roi.r.clip, "red", fill=FALSE, z=1),
                                                     x=roi$x, y=roi$y, roi.r.scale, "yellow", fill=FALSE, z=1),
-                                         img_colourSegs,
-                                         toRGB(img_thresholded))
+                                         img_colourSegs)
           } else {
-            img_comb <- EBImage::combine(drawCircle((img_colourSegs+toRGB(scale*img_original))/2, 
-                                                    x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
-                                         toRGB(img_thresholded))
+            img_comb <- EBImage::combine(toRGB(img_thresholded), # will get segment indices overlayed
+                                         drawCircle((img_colourSegs+toRGB(scale*img_original))/2, 
+                                                    x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1))
           }
           display(img_comb,all=T,method="raster")
           text(10,20,imgMetaData$FileName[i],col="yellow",pos=4)
+          showSegmentLabels(segmentInfo)
+          if (!is.null(mostLikelySegment) & nrow(segmentInfo) > 0) {
+            showSegmentLabels(segmentInfo[segmentInfo$segIndex==mostLikelySegment,],textColour="green")
+          }
         }
       }
       if (!is.null(segmentInfo) && nrow(segmentInfo) > 0) {
@@ -328,11 +349,13 @@ for (nextSlice in seq(nrow(sliceList))) {
 }
 
 # write final results (again, just to be sure)
+allSegments <- left_join(allSegments, unique(select(imageList, Id, Slice, Time, Dataset)), by=c("Id","Slice","Time"))
 for (ds in unique(imageList$Dataset)) {
   cat("Write final", getSegmentFile(ds), "id's:",length(unique(filter(allSegments, Dataset==ds)$Id)), fill=T)
   write.csv(select(filter(allSegments, Dataset==ds), -Dataset), getSegmentFile(ds), row.names=F)
 }
 
+print("Done!")
 
 
 
