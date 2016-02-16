@@ -127,13 +127,13 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
       img_filtered <- normalize(opening(img_clipped),blurBrush) #normalize(opening(img_original*scale, blurBrush))
       # Threshold and segment image. Will do multiple iterations if necessary.
       #plot(hist(img_filtered,xlim = c(0, 1),box = T))
-      otsuThreshold <- otsu(img_filtered)
-      thresholds <- seq(otsuThreshold, 1, by=0.1) # otsu first, then the rest
-      thresholdIndex <- 0
-      doneThresholding <- F
-      segmentInfo <- NULL
-      while (!doneThresholding & (thresholdIndex < length(thresholds))) {
-        thresholdIndex <- thresholdIndex + 1
+      thresholds <- seq(otsu(img_filtered), 1, by=0.1) # otsu first, then the rest
+      best_img_thresholded <- NULL
+      best_img_colourSegs <- NULL
+      best_segmentInfo <- NULL
+      best_probLV <- 0.0
+      best_segIndex <- NULL
+      for (thresholdIndex in seq(length(thresholds))) {
         currentThreshold <- thresholds[thresholdIndex]
         if (thresholdIndex > 1) {
           cat("Re-thresholding",imgMetaData$FileName[i],"#",thresholdIndex,"(of",length(thresholds),") at",currentThreshold,fill=T)
@@ -163,47 +163,58 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
             probLV <- round(predict(leftVentricleSegmentModel, data.matrix(predictors), missing=NaN),3)
             names(probLV) <- segmentInfo$segIndex
             print(head(sort(probLV, decreasing=T), 5))
-            doneThresholding <- (max(probLV) > 0.4)
-            mostLikelySegment <- segmentInfo$segIndex[which.max(probLV)]
+            if (max(probLV) > best_probLV) {
+              best_segIndex <- segmentInfo$segIndex[which.max(probLV)]
+              best_img_thresholded <- img_thresholded
+              best_img_colourSegs <- img_colourSegs
+              best_segmentInfo <- segmentInfo
+              best_probLV <- max(probLV)
+            }
+            if (max(probLV) > 0.4) break
           } else {
-            doneThresholding <- (nrow(segmentInfo) >= 2)
-            mostLikelySegment <- NULL
-          }
-          
-          if (!hasPredefinedROI) {
-            img_comb <- EBImage::combine(toRGB(img_thresholded), # will get segment indices overlayed
-                                         drawCircle((img_colourSegs+toRGB(scale*img_original))/2, 
-                                                    x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
-                                         drawCircle(drawCircle(drawCircle(toRGB(img_original),
-                                                                          x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
-                                                               x=roi$x, y=roi$y, roi.r.clip, "red", fill=FALSE, z=1),
-                                                    x=roi$x, y=roi$y, roi.r.scale, "yellow", fill=FALSE, z=1),
-                                         img_colourSegs)
-          } else {
-            img_comb <- EBImage::combine(toRGB(img_thresholded), # will get segment indices overlayed
-                                         drawCircle((img_colourSegs+toRGB(scale*img_original))/2, 
-                                                    x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1))
-          }
-          display(img_comb,all=T,method="raster")
-          text(10,20,imgMetaData$FileName[i],col="yellow",pos=4)
-          showSegmentLabels(segmentInfo)
-          if (!is.null(mostLikelySegment) & nrow(segmentInfo) > 0) {
-            showSegmentLabels(segmentInfo[segmentInfo$segIndex==mostLikelySegment,],textColour="green")
+            best_img_thresholded <- img_thresholded
+            best_img_colourSegs <- img_colourSegs
+            best_segmentInfo <- segmentInfo
+            if (nrow(segmentInfo) >= 2) break
           }
         }
       }
-      if (!is.null(segmentInfo) && nrow(segmentInfo) > 0) {
-        dirName <- getSegmentedImageDir(segmentInfo[1,])
+
+      cat("Best pLV:", best_probLV, fill=T)
+      # display result of best thresholding
+      if (!hasPredefinedROI) {
+        img_comb <- EBImage::combine(toRGB(best_img_thresholded), # will get segment indices overlayed
+                                     drawCircle((best_img_colourSegs+toRGB(scale*img_original))/2, 
+                                                x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
+                                     drawCircle(drawCircle(drawCircle(toRGB(img_original),
+                                                                      x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
+                                                           x=roi$x, y=roi$y, roi.r.clip, "red", fill=FALSE, z=1),
+                                                x=roi$x, y=roi$y, roi.r.scale, "yellow", fill=FALSE, z=1),
+                                     best_img_colourSegs)
+      } else {
+        img_comb <- EBImage::combine(toRGB(best_img_thresholded), # will get segment indices overlayed
+                                     drawCircle((best_img_colourSegs+toRGB(scale*img_original))/2, 
+                                                x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1))
+      }
+      display(img_comb,all=T,method="raster")
+      text(10,20,imgMetaData$FileName[i],col="yellow",pos=4)
+      showSegmentLabels(best_segmentInfo)
+      if (!is.null(best_segIndex) & nrow(best_segmentInfo) > 0) {
+        showSegmentLabels(best_segmentInfo[best_segmentInfo$segIndex==best_segIndex,],textColour="green")
+      }
+      
+      if (!is.null(best_segmentInfo) && nrow(best_segmentInfo) > 0) {
+        dirName <- getSegmentedImageDir(best_segmentInfo[1,])
         dir.create(dirName, showWarnings = F, recursive = T)
-        fName <- getSegmentedImageFile(segmentInfo[1,], dirName)
+        fName <- getSegmentedImageFile(best_segmentInfo[1,], dirName)
         writeImage(img_colourSegs, fName)
       }
       
-      if (!is.null(segmentInfo)) {
+      if (!is.null(best_segmentInfo)) {
         if (is.null(sliceSegmentation)) {
-          sliceSegmentation <- segmentInfo
+          sliceSegmentation <- best_segmentInfo
         } else {
-          sliceSegmentation <- rbind(sliceSegmentation, segmentInfo)
+          sliceSegmentation <- rbind(sliceSegmentation, best_segmentInfo)
         }
       }
     } else {

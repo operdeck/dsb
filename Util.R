@@ -158,6 +158,9 @@ createSegmentPredictSet <- function(ds)
   #for (i in nrow(dsBySlice)) {
   #  segments <- which(ds[])
   
+  # take top-5 largest neighbours and add, for example,
+  # top5.weighted.area (= sum distance*area; scaled) etc
+  
   ds <- mutate(ds,
                areaMultiplier = PixelSpacing.x * PixelSpacing.y * 0.01, # 1 mL = 1000 mm3
                lengthMultiplier = sqrt(areaMultiplier),
