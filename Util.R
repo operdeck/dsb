@@ -148,11 +148,14 @@ getIdList <- function(type = "sax", playlist=NULL)
 # add rank of area (e.g.) vs other segments, maybe also over time
 
 # Create segment prediction dataset
+# ds could be just one Id/Slice, even be just the segments for a single image
 createSegmentPredictSet <- function(ds)
 {
   ds[, areaRank := frankv(s.area, order=-1L, ties.method="dense"), by=c("Id","Slice","Time")] # fast rank (data.table)
   ds[, areaRelSize := s.area/sum(s.area,na.rm=T), by=c("Id","Slice","Time")] # relative size
   
+  dsByTime <- unique(select(ds,Id,Slice,Time))
+  cat("DS has",nrow(dsByTime),"unique times of avg size",nrow(ds)/nrow(dsByTime),fill=T)
   dsBySlice <- unique(select(ds,Id,Slice))
   cat("DS has",nrow(dsBySlice),"unique slices of avg size",nrow(ds)/nrow(dsBySlice),fill=T)
   #for (i in nrow(dsBySlice)) {

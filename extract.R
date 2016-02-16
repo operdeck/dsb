@@ -96,7 +96,7 @@ findROI <- function (allImages, imgMetaData) {
   roi <- list(x = mean(rois$m.cx), y = mean(rois$m.cy), r = mean(rois$radius))
 }
 
-modif1 = function(x) sin((x - 1.2)^3) + 1
+modif1 = function(x) sin((x - 1.2)^3) + 1 # a sigmoid like function
 
 segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
   allImages <- readAllImages(imgMetaData)  
@@ -131,13 +131,10 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
       best_img_thresholded <- NULL
       best_img_colourSegs <- NULL
       best_segmentInfo <- NULL
-      best_probLV <- 0.0
+      best_probLV <- -Inf
       best_segIndex <- NULL
       for (thresholdIndex in seq(length(thresholds))) {
         currentThreshold <- thresholds[thresholdIndex]
-        if (thresholdIndex > 1) {
-          cat("Re-thresholding",imgMetaData$FileName[i],"#",thresholdIndex,"(of",length(thresholds),") at",currentThreshold,fill=T)
-        }
         img_thresholded <- img_filtered > currentThreshold
         img_segmented <- fillHull(bwlabel(img_thresholded))
         if (max(img_segmented) > 0) {
@@ -161,8 +158,8 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
           if (!is.null(leftVentricleSegmentModel)) {
             predictors <- createSegmentPredictSet(select(segmentInfo, -isProcessed))
             probLV <- round(predict(leftVentricleSegmentModel, data.matrix(predictors), missing=NaN),3)
-            names(probLV) <- segmentInfo$segIndex
-            print(head(sort(probLV, decreasing=T), 5))
+            #names(probLV) <- segmentInfo$segIndex
+            #print(head(sort(probLV, decreasing=T), 5))
             if (max(probLV) > best_probLV) {
               best_segIndex <- segmentInfo$segIndex[which.max(probLV)]
               best_img_thresholded <- img_thresholded
@@ -170,7 +167,7 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
               best_segmentInfo <- segmentInfo
               best_probLV <- max(probLV)
             }
-            if (max(probLV) > 0.4) break
+            if (max(probLV) > 0.8) break
           } else {
             best_img_thresholded <- img_thresholded
             best_img_colourSegs <- img_colourSegs
@@ -180,7 +177,7 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
         }
       }
 
-      cat("Best pLV:", best_probLV, fill=T)
+      cat("Best pLV:", best_probLV, "[#", thresholdIndex, ": @", thresholds[thresholdIndex], "]", fill=T)
       # display result of best thresholding
       if (!hasPredefinedROI) {
         img_comb <- EBImage::combine(toRGB(best_img_thresholded), # will get segment indices overlayed
