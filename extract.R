@@ -29,6 +29,7 @@ if (file.exists('lv.xgb.model')) {
 } else {
   leftVentricleSegmentModel <- NULL
 }
+thresholdHighLV <- 0.8
 
 # see bio image detection stuff
 # http://bioconductor.wustl.edu/bioc/vignettes/EBImage/inst/doc/AnalysisWithEBImage.pdf
@@ -98,7 +99,8 @@ findROI <- function (allImages, imgMetaData) {
 
 modif1 = function(x) sin((x - 1.2)^3) + 1 # a sigmoid like function
 
-segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
+segmentImagesForOneSlice <- function(imgMetaData, roi=NULL, roiAlt=NULL) {
+  imgMetaData$best_probLV <- -Inf
   allImages <- readAllImages(imgMetaData)  
   hasPredefinedROI <- !is.null(roi)
   if (!hasPredefinedROI) {    
@@ -111,23 +113,27 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
     img_original <- allImages[[i]] 
     if (roi$r > 1) {
       roi.r.scale <- roi$r/2
-      roi.r.clip <- 1.5*roi$r
       # Normalize intensity using ROI. Using only half radius because often high intensity around borders.
       intensity_mask <- drawCircle(matrix(0, nrow=dim(img_original)[1], ncol=dim(img_original)[2]), 
                                    x=roi$x, y=roi$y, roi.r.scale, col=1, fill=T)
       img_masked_to_roi <- img_original*intensity_mask # keeps only pixels inside ROI
       scale <- 1/max(img_masked_to_roi)
+      
       # Clip image using ROI. Using a bit larger area than ROI itself.
+      if (!is.null(roiAlt)) roi <- roiAlt
+      roi.r.clip <- 1.5*roi$r
       clip_mask <- drawCircle(matrix(0, nrow=dim(img_original)[1], ncol=dim(img_original)[2]), 
                               x=roi$x, y=roi$y, roi.r.clip, col=1, fill=T)
       img_clipped <- modif1(img_original*scale*clip_mask)
+      
       # Filter image
       blurBrushSize <- 3.75 # Size of erode/dilate mask in millimeter
       blurBrush <- makeBrush(max(1,round(blurBrushSize/pixelLengthScale)), shape= 'Gaussian', sigma=10) # 5 for "normal images" scale 0.75
       img_filtered <- normalize(opening(img_clipped),blurBrush) #normalize(opening(img_original*scale, blurBrush))
       # Threshold and segment image. Will do multiple iterations if necessary.
       #plot(hist(img_filtered,xlim = c(0, 1),box = T))
-      thresholds <- seq(otsu(img_filtered), 1, by=0.1) # otsu first, then the rest
+      otsu_threshold <- otsu(img_filtered)
+      thresholds <- c(seq(otsu_threshold, 1, by=0.1), seq(otsu_threshold, 0, by=-0.05)) # otsu first, then the rest
       best_img_thresholded <- NULL
       best_img_colourSegs <- NULL
       best_segmentInfo <- NULL
@@ -167,7 +173,7 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
               best_segmentInfo <- segmentInfo
               best_probLV <- max(probLV)
             }
-            if (max(probLV) > 0.8) break
+            if (max(probLV) > thresholdHighLV) break
           } else {
             best_img_thresholded <- img_thresholded
             best_img_colourSegs <- img_colourSegs
@@ -177,12 +183,19 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
         }
       }
 
-      cat("Best pLV:", best_probLV, "[#", thresholdIndex, ": @", thresholds[thresholdIndex], "]", fill=T)
+      #cat("Best pLV:", best_probLV, "[#", thresholdIndex, ": @", thresholds[thresholdIndex], "]", fill=T)
+      imgMetaData$best_probLV[i] <- best_probLV
+      
       # display result of best thresholding
+      annotatedOriginal <- drawCircle((best_img_colourSegs+toRGB(scale*img_original))/2, 
+                                      x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1)
+      if (!is.null(roiAlt)) {
+        annotatedOriginal <- drawCircle(annotatedOriginal, 
+                                        x=roiAlt$x, y=roiAlt$y, roiAlt$r, "green", fill=FALSE, z=1)
+      }
       if (!hasPredefinedROI) {
         img_comb <- EBImage::combine(toRGB(best_img_thresholded), # will get segment indices overlayed
-                                     drawCircle((best_img_colourSegs+toRGB(scale*img_original))/2, 
-                                                x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
+                                     annotatedOriginal,
                                      drawCircle(drawCircle(drawCircle(toRGB(img_original),
                                                                       x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1),
                                                            x=roi$x, y=roi$y, roi.r.clip, "red", fill=FALSE, z=1),
@@ -190,8 +203,7 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
                                      best_img_colourSegs)
       } else {
         img_comb <- EBImage::combine(toRGB(best_img_thresholded), # will get segment indices overlayed
-                                     drawCircle((best_img_colourSegs+toRGB(scale*img_original))/2, 
-                                                x=roi$x, y=roi$y, roi$r, "blue", fill=FALSE, z=1))
+                                     annotatedOriginal)
       }
       display(img_comb,all=T,method="raster")
       text(10,20,imgMetaData$FileName[i],col="yellow",pos=4)
@@ -218,6 +230,9 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL) {
       print("WARN: invalid ROI for segment (too small perhaps?)")
     }
   } # all images of one slice
+
+  cat("pLV summary for this slice (best pLV for every image):",fill=T)
+  print(summary(imgMetaData$best_probLV))
   
   return(sliceSegmentation)
 }
@@ -281,18 +296,29 @@ for (nextSlice in seq(nrow(sliceList))) {
       ifelse(any(sliceImgMetaData$isProcessed), "Re-segmenting", "Segmenting"),
       fill=T)
 
-  # ROI of all slices of the same Id with lower order (closer to the middle)
-  ROIs <- filter(left_join(select(filter(allSegments, Id==slice$Id, Slice!=slice$Slice), 
-                                  Id, Slice, starts_with("ROI.")),
-                           imageList, by=c("Id", "Slice")), 
-                 SliceOrder < slice$SliceOrder)
-  if (nrow(ROIs)>0) {
-    roi <- list(x = mean(ROIs$ROI.x), y = mean(ROIs$ROI.y), r = mean(ROIs$ROI.r))
-  } else {
-    roi <- NULL
+  # Calculate ROI either from all slices of the same Id with lower order (closer to the middle), or, if available and
+  # returning a high probability, the area of the predicted LV segments in the previous slices.
+  previousImages <- filter(left_join(filter(allSegments, Id==slice$Id, Slice!=slice$Slice), 
+                                  #Id, Slice, starts_with("ROI.")),
+                           imageList, by=c("Id", "Slice", "Time")), 
+                 SliceOrder < slice$SliceOrder, # closer to middle
+                 ((SliceOrder == 1) | (SliceOrder%%2 == slice$SliceOrder%%2))) # same side of middle; maybe only last few
+  roi <- NULL
+  roiPrevLVs <- NULL
+  if (nrow(previousImages)>0) {
+    roi <- list(x = mean(previousImages$ROI.x), y = mean(previousImages$ROI.y), r = mean(previousImages$ROI.r))
+    if (!is.null(leftVentricleSegmentModel)) {
+      predictors <- createSegmentPredictSet(select(previousImages, -isProcessed))
+      previousImages$pLV <- round(predict(leftVentricleSegmentModel, data.matrix(predictors), missing=NaN),3)
+      previousImages[,isBestGuess := pLV == max(pLV), by="Time"]
+      previousImages <- filter(previousImages, isBestGuess, pLV > thresholdHighLV) # high threshold
+      if (nrow(previousImages) > 5) {
+        roiPrevLVs <- list(x = median(previousImages$m.cx), y = median(previousImages$m.cy), r = max(previousImages$s.radius.max))
+      }
+    }
   }
   
-  sliceSegmentationInfo <- segmentImagesForOneSlice(sliceImgMetaData, roi)
+  sliceSegmentationInfo <- segmentImagesForOneSlice(sliceImgMetaData, roi, roiPrevLVs)
   # drop meta-data as this will be joined in via image list upon read
   sliceSegmentationInfo <- select(sliceSegmentationInfo, 
                                   Id, Slice, Time, segIndex, UUID,
