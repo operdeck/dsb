@@ -124,7 +124,7 @@ createSegmentModelAndApply <- function(train, test)
   leftVentricleSegmentModel <- xgboost(data = data.matrix(select(train, -isLV)),
                                        missing=NaN,
                                        label = train$isLV, 
-                                       max.depth = 4, eta = 0.1, nround = 100,
+                                       max.depth = 6, eta = 0.1, nround = 70,
                                        objective = "binary:logistic", verbose=0)
   xgb.save(leftVentricleSegmentModel, 'lv.xgb.model')
   

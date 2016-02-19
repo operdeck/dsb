@@ -153,6 +153,7 @@ createSegmentPredictSet <- function(ds)
 {
   ds[, areaRank := frankv(s.area, order=-1L, ties.method="dense"), by=c("Id","Slice","Time")] # fast rank (data.table)
   ds[, areaRelSize := s.area/sum(s.area,na.rm=T), by=c("Id","Slice","Time")] # relative size
+  ds[, nSegments := length(s.area), by=c("Id","Slice","Time")] # number of segments per image
   
   #dsByTime <- unique(select(ds,Id,Slice,Time))
   #cat("DS has",nrow(dsByTime),"unique times of avg size",nrow(ds)/nrow(dsByTime),fill=T)
@@ -183,6 +184,8 @@ createSegmentPredictSet <- function(ds)
                majoraxis = m.majoraxis*lengthMultiplier,
                roundness = 4*pi*area/(perimeter^2),
                
+               male = (PatientsSex == "M" | PatientsSex == "m"),
+               
                slicePct = SliceIndex/SliceCount) %>%
     dplyr::rename(eccentricity = m.eccentricity,
            theta = m.theta) %>%
@@ -202,10 +205,10 @@ createSegmentPredictSet <- function(ds)
            -SliceIndex, -SliceCount,# used to build another predictor
            #-distToROI,              # position dependent - not available always
            -Offset)                 # slice location is the better predictor
-  
+
   # Keep only numerics plus the outcome (logic)
   ds <- ds[,sapply(ds, function(c) { return (is.numeric(c) | is.logical(c)) }),with=F] # keep only numerics
-
+  
   # ID slice img   seg x/y <segment details>
   #
   #  1     1   1   0.1 0.2   0.5 0.6 
