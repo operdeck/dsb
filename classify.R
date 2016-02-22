@@ -14,21 +14,10 @@ gc()
 segPredictFile <- "segments-predict.csv"
 
 # Id's of images that need re-classification because of manual error. All slices will be discarded.
-redoClassificationIdList <- c() # list the ID's here
+redoClassificationIdList <- c(441) # list the ID's here
 
 # TODO maybe matching UUID's (re-segmented) should take priority 
 # TODO auto detect classified images with no LV segments
-
-# Problematic images - need re-segmentation
-# Too much light around edges:
-#  train 6, slice 10
-#  train 8, slice 58
-#  train 8, slice 59
-# Very dark, some images OK but some lack segments:
-#  train 3, slice 46&47
-# Near miss
-#  train 7, slice 49 : almost all images OK but segment 13 (or so) is incorrect
-
 
 showSingleImage <- function(segments) {
   f <- getImageFile(segments)
@@ -111,7 +100,7 @@ createSegmentModelAndApply <- function(train, test)
     train <- train[complete.cases(train),]
   }
   preds <- rep(1.0/nrow(test), nrow(test))
-  if(is.null(train) || nrow(train) < 1000) {
+  if(is.null(train) || nrow(train) < 100) {
     return (preds)
   }
   
@@ -185,12 +174,15 @@ for (sliceIndex in seq(nrow(promptSlices))) {
     next
   }
   # Create simple segment model and predict pLV on whole slice here
-  slice$pLV <- createSegmentModelAndApply(left_join(segPredictSet, 
-                                                    select(allSegments, 
-                                                           -starts_with("m."),
-                                                           -starts_with("s.")), 
-                                                    by=c("Id", "Slice", "Time", "UUID")), 
-                                          slice)
+  predSet <- NULL
+  if (!is.null(segPredictSet)) {
+    predSet <- left_join(segPredictSet, 
+                         select(allSegments, 
+                                -starts_with("m."),
+                                -starts_with("s.")), 
+                         by=c("Id", "Slice", "Time", "UUID"))
+  }
+  slice$pLV <- createSegmentModelAndApply(predSet, slice)
   
   # list of images in this slice that need processing
   unProcessedImageIndices <- unique(slice$Time)
