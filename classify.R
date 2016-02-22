@@ -18,7 +18,7 @@ segPredictFile <- "segments-predict.csv"
 # too big ROI: 341
 # wrong ROI: 238, 259, 441
 # poor seg: 480
-redoClassificationIdList <- c(238,259,341,480) # list the ID's here
+redoClassificationIdList <- c() # c(238,259,341,480) # list the ID's here
 
 # TODO maybe matching UUID's (re-segmented) should take priority 
 # TODO auto detect classified images with no LV segments
@@ -99,8 +99,6 @@ createSegmentModelAndApply <- function(train, test)
   if (is.null(train)) {
     print("No data for LV model yet")
   } else {
-    cat("LV model built out of", sum(complete.cases(train)), 
-        "complete cases from total",nrow(train),fill=T)
     train <- train[complete.cases(train),]
   }
   preds <- rep(1.0/nrow(test), nrow(test))
@@ -112,7 +110,7 @@ createSegmentModelAndApply <- function(train, test)
   train <- createSegmentPredictSet( filter(train, !is.na(isLV)))
   test <- createSegmentPredictSet(test)
   
-  cat("Predictors:",names(train),fill=T)
+  #cat("*** Predictors:",names(select(train, -isLV)),fill=T)
   
   leftVentricleSegmentModel <- xgboost(data = data.matrix(select(train, -isLV)),
                                        missing=NaN,
@@ -186,6 +184,12 @@ for (sliceIndex in seq(nrow(promptSlices))) {
                                 -starts_with("m."),
                                 -starts_with("s.")), 
                          by=c("Id", "Slice", "Time", "UUID"))
+    
+    # Quick report on the segmentation prediction data set.
+    cat("Segment predict set has",nrow(segPredictSet),"observations with a pos rate of",sum(segPredictSet$isLV,na.rm=T)/nrow(segPredictSet),fill=T)
+    cat("   number of Ids   :",nrow(unique(select(segPredictSet,Id))),"with identified LV",nrow(unique(select(filter(segPredictSet,isLV),Id))),fill=T)
+    cat("   number of Slices:",nrow(unique(select(segPredictSet,Id,Slice))),"with identified LV",nrow(unique(select(filter(segPredictSet,isLV),Id,Slice))),fill=T)
+    cat("   number of Images:",nrow(unique(select(segPredictSet,Id,Slice,Time))),"with identified LV",nrow(unique(select(filter(segPredictSet,isLV),Id,Slice,Time))),fill=T)
   }
   slice$pLV <- createSegmentModelAndApply(predSet, slice)
   

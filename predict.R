@@ -16,7 +16,7 @@ require(caret)
 library(DMwR) # outlier detection
 
 # Threshold for LV segment probability
-pSegmentThreshold <- 0.2
+pSegmentThreshold <- 0.1
 
 # Threshold for missing segments (excludes cases from being used in train set of final models)
 # (missing ratio should be lower than this threshold)
@@ -160,7 +160,7 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   
   leftVentricleSegmentModel <- xgboost(data = data.matrix(trainDataPredictorsOnly[-valSet]), 
                                        label = segClassificationSet$isLV[-valSet], 
-                                       max.depth = 6, eta = 0.05, nround = 100,
+                                       max.depth = 6, eta = 0.1, nround = 70,
                                        objective = "binary:logistic", 
                                        missing=NaN, verbose=0)
   imp_matrix <- xgb.importance(feature_names = names(trainDataPredictorsOnly), model = leftVentricleSegmentModel)
@@ -199,12 +199,14 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   write.csv(allSegments, imagePredictFile, row.names=F)
 }
 
-# Remove segments with pLV < threshold
-allSegments <- filter(allSegments, pLV > pSegmentThreshold)
-print(qplot(allSegments$pLV))
+# segClassificationSet = dataset with truth in isLV
 
+# Remove segments with pLV < threshold
 # Keep only the segments with max pLV for each image
 allSegments[, isLV := segIndex == segIndex[which.max(pLV)], by=c("Id","Slice","Time")]
+ggplot(allSegments, aes(x=pLV,fill=isLV))+stat_bin(breaks=seq(0,1,by=0.05))+ggtitle("Distribution of best pLV per image")
+allSegments <- filter(allSegments, pLV > pSegmentThreshold)
+
 imageData <- createImagePredictSet(left_join(imageList, 
                                              filter(allSegments, isLV),
                                              by=c("Id", "Slice", "Time")))

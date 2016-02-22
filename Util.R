@@ -184,7 +184,7 @@ createSegmentPredictSet <- function(ds)
                majoraxis = m.majoraxis*lengthMultiplier,
                roundness = 4*pi*area/(perimeter^2),
                
-               male = (PatientsSex == "M" | PatientsSex == "m"),
+               male = as.numeric(PatientsSex == "M" | PatientsSex == "m"),
                
                slicePct = SliceIndex/SliceCount) %>%
     dplyr::rename(eccentricity = m.eccentricity,

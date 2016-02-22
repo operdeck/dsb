@@ -162,7 +162,8 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL, roiAlt=NULL) {
                                                   setdiff(seq(max(img_segmented)),segmentInfo$segIndex)))
           # Use LV model (if available) to evaluate quality of segmentation
           if (!is.null(leftVentricleSegmentModel)) {
-            predictors <- createSegmentPredictSet(select(segmentInfo, -isProcessed))
+            predictors <- createSegmentPredictSet(select(segmentInfo, -isProcessed, -best_probLV))
+            #cat("*** Predictors:",names(predictors),fill=T)
             probLV <- round(predict(leftVentricleSegmentModel, data.matrix(predictors), missing=NaN),3)
             #names(probLV) <- segmentInfo$segIndex
             #print(head(sort(probLV, decreasing=T), 5))
@@ -276,7 +277,7 @@ if (!is.null(allSegments)) {
 imageList$Random <- runif(max(imageList$Id))
 # imageList$SpecialOrder <- ifelse(T, imageList$SliceOrder, 1+max(imageList$SliceOrder))
 # imageList <- arrange(imageList, isProcessed, SpecialOrder, Random) %>% select(-Random, -SpecialOrder)
-imageList <- arrange(imageList, isProcessed, Id, SliceOrder, Random) %>% select(-Random)
+imageList <- arrange(imageList, isProcessed, SliceOrder, Random) %>% select(-Random)
 
 # Process images per slice. Image of the same slice (usually) have same dimensions, location etc
 sliceList <- unique(select(imageList, Dataset, Id, ImgType, starts_with("Slice")))
