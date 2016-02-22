@@ -14,7 +14,11 @@ gc()
 segPredictFile <- "segments-predict.csv"
 
 # Id's of images that need re-classification because of manual error. All slices will be discarded.
-redoClassificationIdList <- c(441) # list the ID's here
+
+# too big ROI: 341
+# wrong ROI: 238, 259, 441
+# poor seg: 480
+redoClassificationIdList <- c(238,259,341,480) # list the ID's here
 
 # TODO maybe matching UUID's (re-segmented) should take priority 
 # TODO auto detect classified images with no LV segments
@@ -118,6 +122,7 @@ createSegmentModelAndApply <- function(train, test)
   xgb.save(leftVentricleSegmentModel, 'lv.xgb.model')
   
   imp_matrix <- xgb.importance(feature_names = names(select(train, -isLV)), model = leftVentricleSegmentModel)
+  print(imp_matrix)
   print(xgb.plot.importance(importance_matrix = imp_matrix))
   
   probLV <- predict(leftVentricleSegmentModel, data.matrix(test), missing=NaN) #, missing=NaN)
@@ -209,19 +214,24 @@ for (sliceIndex in seq(nrow(promptSlices))) {
     showSegmentLabels(segmentsFirstImage[which.max(segmentProbs),],textColour="green")
     indexOfLVSegment <- readInteger(paste("Identify Left Ventricle in image",
                                           firstImageIndex,
-                                          "(0=none, -1=skip image, -2=skip slice): "))
+                                          "(0=none, -1=skip image, -2=skip slice, -3=all none (wrong ROI))): "))
     
     if (indexOfLVSegment < 1) {
       if (indexOfLVSegment == -2) {
         break 
       }
-      # set isLV for all segments of first image only
-      if (indexOfLVSegment == 0) {
-        slice[Time == firstImageIndex, isLV := FALSE] # no LV segment
+      if (indexOfLVSegment == -3) {
+        slice[,isLV := FALSE] # no LV segment anywhere, wrong ROI
+        unProcessedImageIndices <- c()
       } else {
-        slice[Time == firstImageIndex, isLV := NA]    # don't know / can't see
+        # set isLV for all segments of first image only
+        if (indexOfLVSegment == 0) {
+          slice[Time == firstImageIndex, isLV := FALSE] # no LV segment
+        } else {
+          slice[Time == firstImageIndex, isLV := NA]    # don't know / can't see
+        }
+        unProcessedImageIndices <- restOfUnprocessedImageIndices
       }
-      unProcessedImageIndices <- restOfUnprocessedImageIndices
     } else {
       # set isLV for all segments of first image (T/F)
       slice[Time == firstImageIndex, isLV := (segIndex == indexOfLVSegment)]
