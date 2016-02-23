@@ -30,6 +30,7 @@ if (file.exists('lv.xgb.model')) {
   leftVentricleSegmentModel <- NULL
 }
 thresholdHighLV <- 0.8
+thresholdLowLV <- 0.3 # used to decide to re-segment image with full ROI
 
 # see bio image detection stuff
 # http://bioconductor.wustl.edu/bioc/vignettes/EBImage/inst/doc/AnalysisWithEBImage.pdf
@@ -97,8 +98,6 @@ findROI <- function (allImages, imgMetaData) {
   roi <- list(x = mean(rois$m.cx), y = mean(rois$m.cy), r = mean(rois$radius))
 }
 
-modif1 = function(x) sin((x - 1.2)^3) + 1 # a sigmoid like function
-
 segmentImagesForOneSlice <- function(imgMetaData, roi=NULL, roiAlt=NULL) {
   imgMetaData$best_probLV <- -Inf
   allImages <- readAllImages(imgMetaData)  
@@ -122,9 +121,12 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL, roiAlt=NULL) {
       # Clip image using ROI. Using a bit larger area than ROI itself.
       if (!is.null(roiAlt)) roi <- roiAlt
       roi.r.clip <- 1.5*roi$r
-      clip_mask <- drawCircle(matrix(0, nrow=dim(img_original)[1], ncol=dim(img_original)[2]), 
-                              x=roi$x, y=roi$y, roi.r.clip, col=1, fill=T)
-      img_clipped <- modif1(img_original*scale*clip_mask)
+      clip_mask <- matrix(0, nrow=dim(img_original)[1], ncol=dim(img_original)[2])
+      clip_mask[ max(1, round(roi$x - roi.r.clip)) : min(nrow(clip_mask), round(roi$x + roi.r.clip)),
+                 max(1, round(roi$y - roi.r.clip)) : min(ncol(clip_mask), round(roi$y + roi.r.clip))] <- 1
+      #clip_mask2 <- drawCircle(matrix(0, nrow=dim(img_original)[1], ncol=dim(img_original)[2]), 
+      #                        x=roi$x, y=roi$y, roi.r.clip, col=1, fill=T)
+      img_clipped <- img_original*scale*clip_mask
       
       # Filter image
       blurBrushSize <- 3.75 # Size of erode/dilate mask in millimeter
@@ -141,6 +143,7 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL, roiAlt=NULL) {
       best_segIndex <- NULL
       for (thresholdIndex in seq(length(thresholds))) {
         currentThreshold <- thresholds[thresholdIndex]
+        #cat("Threshold=",currentThreshold,"[",thresholdIndex, "]",fill=T)
         img_thresholded <- img_filtered > currentThreshold
         img_segmented <- fillHull(bwlabel(img_thresholded))
         if (max(img_segmented) > 0) {
@@ -167,6 +170,7 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL, roiAlt=NULL) {
             probLV <- round(predict(leftVentricleSegmentModel, data.matrix(predictors), missing=NaN),3)
             #names(probLV) <- segmentInfo$segIndex
             #print(head(sort(probLV, decreasing=T), 5))
+            
             if (max(probLV) > best_probLV) {
               best_segIndex <- segmentInfo$segIndex[which.max(probLV)]
               best_img_thresholded <- img_thresholded
@@ -183,7 +187,6 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL, roiAlt=NULL) {
           }
         }
       }
-
       #cat("Best pLV:", best_probLV, "[#", thresholdIndex, ": @", thresholds[thresholdIndex], "]", fill=T)
       imgMetaData$best_probLV[i] <- best_probLV
       
@@ -234,6 +237,10 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL, roiAlt=NULL) {
 
   cat("pLV summary for this slice (best pLV for every image):",fill=T)
   print(summary(imgMetaData$best_probLV))
+  if (!is.null(roi) & mean(imgMetaData$best_probLV) < thresholdLowLV) {
+    print("pLV below threshold - re-segment with ROI discovery")
+    sliceSegmentation <- segmentImagesForOneSlice(imgMetaData)
+  }
   
   return(sliceSegmentation)
 }
@@ -274,13 +281,14 @@ if (!is.null(allSegments)) {
 } else {
   imageList$isProcessed <- F
 }
-imageList$Random <- runif(max(imageList$Id))
+imageList$Random <- runif(nrow(imageList))
 # imageList$SpecialOrder <- ifelse(T, imageList$SliceOrder, 1+max(imageList$SliceOrder))
 # imageList <- arrange(imageList, isProcessed, SpecialOrder, Random) %>% select(-Random, -SpecialOrder)
 imageList <- arrange(imageList, isProcessed, Random) %>% select(-Random)
 
 # Process images per slice. Image of the same slice (usually) have same dimensions, location etc
 sliceList <- unique(select(imageList, Dataset, Id, ImgType, starts_with("Slice")))
+print(head(paste(sliceList$Id,sliceList$Slice,sep="/"),20))
 
 for (nextSlice in seq(nrow(sliceList))) {
   slice <- sliceList[nextSlice,]
@@ -316,7 +324,7 @@ for (nextSlice in seq(nrow(sliceList))) {
       if (nrow(previousImages) > 5) {
         roiPrevLVs <- list(x = median(previousImages$m.cx), 
                            y = median(previousImages$m.cy), 
-                           r = 1.5*max(previousImages$s.radius.max))
+                           r = max(previousImages$s.radius.max))
       }
     }
   }
