@@ -7,20 +7,9 @@
 # biocLite()
 
 # Segmentation
-# - use ROI of middle slices (x 1.5 or 2 perhaps) for the outer slices
 # - for ideas on how to color EBimage segments: http://rpackages.ianhowson.com/bioc/EBImage/man/bwlabel.html
 # - adaptive thresholding: http://rpackages.ianhowson.com/bioc/EBImage/man/thresh.html
 # - segm: maybe use watershed (voronoi not a good idea)
-
-# 80-8 is right scale
-# 500-20 has same scale for img processing constants
-
-# Id 80 - large scale
-# No segmentation (too dark)
-#  train 66 - 15
-#  train  6 - 7
-# TODO: get this automatically from the segmentation (processed but no segs)
-# TODO: save segmented images
 
 source("util.R")
 
@@ -29,8 +18,9 @@ if (file.exists('lv.xgb.model')) {
 } else {
   leftVentricleSegmentModel <- NULL
 }
-thresholdHighLV <- 0.8
-thresholdLowLV <- 0.3 # used to decide to re-segment image with full ROI
+thresholdHighLV <- 0.8 # used to decide to settle on a threshold and not try further, plus
+                       # to get the segments from previous slices to determine the ROI
+thresholdLowLV <- 0.4 # used to decide to re-segment image with full ROI
 
 # see bio image detection stuff
 # http://bioconductor.wustl.edu/bioc/vignettes/EBImage/inst/doc/AnalysisWithEBImage.pdf
