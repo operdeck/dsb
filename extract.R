@@ -314,7 +314,9 @@ for (nextSlice in seq(nrow(sliceList))) {
       previousImages[,isBestGuess := pLV == max(pLV), by="Time"]
       previousImages <- filter(previousImages, isBestGuess, pLV > thresholdHighLV) # high threshold
       if (nrow(previousImages) > 5) {
-        roiPrevLVs <- list(x = median(previousImages$m.cx), y = median(previousImages$m.cy), r = max(previousImages$s.radius.max))
+        roiPrevLVs <- list(x = median(previousImages$m.cx), 
+                           y = median(previousImages$m.cy), 
+                           r = 1.5*max(previousImages$s.radius.max))
       }
     }
   }
