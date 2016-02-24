@@ -227,7 +227,7 @@ segmentImagesForOneSlice <- function(imgMetaData, roi=NULL, roiAlt=NULL) {
 
   cat("pLV summary for this slice (best pLV for every image):",fill=T)
   print(summary(imgMetaData$best_probLV))
-  if (!is.null(roi) & mean(imgMetaData$best_probLV) < thresholdLowLV) {
+  if (!is.null(roiAlt) & mean(imgMetaData$best_probLV) < thresholdLowLV) {
     print("pLV below threshold - re-segment with ROI discovery")
     sliceSegmentation <- segmentImagesForOneSlice(imgMetaData)
   }
