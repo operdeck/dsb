@@ -14,9 +14,10 @@ library(pROC)
 library(lattice)
 require(caret)
 library(DMwR) # outlier detection
+require(mgcv) # 3D smoothing
 
 # Threshold for LV segment probability
-pSegmentThreshold <- 0.1
+pSegmentThreshold <- 0.2
 
 # Threshold for missing segments (excludes cases from being used in train set of final models)
 # (missing ratio should be lower than this threshold)
@@ -37,6 +38,9 @@ imageList <- getImageList()
 
 print("Reading train data")
 trainVolumes <- fread('data/train.csv') 
+
+# Random IDs from train set for plotting
+sampleIds <- sample(unique(trainVolumes$Id), 10)
 
 print("Reading segmentation")
 
@@ -167,7 +171,7 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
   print(xgb.plot.importance(importance_matrix = imp_matrix))
   
   # Get an idea of the accuracy. Note, it seems very high always.
-  probLV <- predict(leftVentricleSegmentModel, data.matrix(trainDataPredictorsOnly))
+  probLV <- predict(leftVentricleSegmentModel, data.matrix(trainDataPredictorsOnly), missing=NaN)
   cat("AUC for validation set:", auc(segClassificationSet$isLV[valSet], probLV[valSet]), fill=T)
   
   # Distribution of probabilities
@@ -205,12 +209,13 @@ if (skipSegmentPrediction & file.exists(imagePredictFile)) {
 # Keep only the segments with max pLV for each image
 allSegments[, isLV := segIndex == segIndex[which.max(pLV)], by=c("Id","Slice","Time")]
 ggplot(allSegments, aes(x=pLV,fill=isLV))+stat_bin(breaks=seq(0,1,by=0.05))+ggtitle("Distribution of best pLV per image")
-allSegments <- filter(allSegments, pLV > pSegmentThreshold)
+
+allSegments <- filter(allSegments, isLV)
 
 imageData <- createImagePredictSet(left_join(imageList, 
-                                             filter(allSegments, isLV),
+                                             allSegments,
                                              by=c("Id", "Slice", "Time")))
-cat("Total",nrow(imageData),"images, of which",nrow(filter(imageData,isLV)),"have a detected LV",fill=T)
+cat("Total",nrow(imageData),"images, of which",nrow(allSegments),"have a detected LV",fill=T)
 
 # This should show that lower slice order have a higher probabilities for the left ventricle (better segmentation)
 pLeftVentricle <- cut(imageData$pLV,breaks=seq(0,1,by=0.1))
@@ -218,10 +223,13 @@ print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_b
         ggtitle("LV Probability vs Slice Order") +
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
-# Random IDs from train set for plotting
-sampleIds <- sample(unique(trainVolumes$Id), 10)
+# If probability of pLV is too low, assume the segment is zero size. 
+allSegments[pLV < pSegmentThreshold, s.area := 0]
 
 # Data cleansing: outlier detection and missing value imputation
+# Currently only doing this for "area". Potentially do the same for the other - potential - predictors
+# with outliers/missing values: area.ellipse, radius.max, radius.min, radius.mean
+# if so, make sure to set those to NA or zero as well when pLV is too low
 zRange <- range(0: quantile(imageData$area, na.rm=T, p=0.90)) 
 for (plotId in unique(imageData$Id)) {
   data3D <- imageData[Id == plotId, sapply(imageData, is.numeric), with=F]
@@ -233,7 +241,7 @@ for (plotId in unique(imageData$Id)) {
                   zlim=zRange))
   
   # Outliers removal by time and slice (TODO cant we do this at once somehow?)
-  similarityData <- select(data3D, Slice, Time, area)
+  similarityData <- select(data3D, SliceLocation, Time, area)
   nOutliers <- 0
   for (t in unique(similarityData$Time)) {
     d <- similarityData[Time==t]$area
@@ -242,19 +250,20 @@ for (plotId in unique(imageData$Id)) {
       #plot(density(outlier.scores))
       outliers <- which(!is.na(d))[which(outlier.scores > 3.0)] # somewhat arbitrary
       nOutliers <- nOutliers + length(outliers)
-      outlierSlices <- similarityData[Time==t]$Slice[outliers]
-      data3D[Time==t & Slice %in% outlierSlices, area := NA]
+      outlierSlices <- similarityData[Time==t]$SliceLocation[outliers]
+      data3D[Time==t & SliceLocation %in% outlierSlices, area := NA]
     }
   }
-  for (s in unique(similarityData$Slice)) {
-    d <- similarityData[Slice==s]$area
+  
+  for (s in unique(similarityData$SliceLocation)) {
+    d <- similarityData[SliceLocation==s]$area
     if (sum(!is.na(d)) > 3) {
       outlier.scores <- lofactor(na.omit(d), k=3)
       #plot(density(outlier.scores))
       outliers <- which(!is.na(d))[which(outlier.scores > 3.0)] # somewhat arbitrary
       nOutliers <- nOutliers + length(outliers)
-      outlierTimes <- similarityData[Slice==s]$Time[outliers]
-      data3D[Slice==s & Time %in% outlierTimes, area := NA]
+      outlierTimes <- similarityData[SliceLocation==s]$Time[outliers]
+      data3D[SliceLocation==s & Time %in% outlierTimes, area := NA]
     }
   }
   outlierRatio <- nOutliers/(length(unique(similarityData$Time))*length(unique(similarityData$Slice)))
@@ -273,12 +282,23 @@ for (plotId in unique(imageData$Id)) {
                   shade=T, col.regions = terrain.colors(100), 
                   main=paste("Outliers Removed Id=",plotId), 
                   zlim=zRange))
+
+  # Missing imputation (kNN doesnt work with many NAs, caret bag is very slow)
+  # anisotropic penalised regression splines
+  b1 <- gam(area ~ s(Time,SliceLocation), data=data3D)
+  #vis.gam(b1,ticktype="detailed",phi=30,theta=-30) # also nice vizualation
+  #title(paste("Missings Imputed Id=",plotId))
+  preds <- predict(b1, similarityData)
+  #preds <- predict(preProcess(data3D, method="bagImpute"), newdata=data3D)
+
+  # only for the NA's
+  #data3D[,area := ifelse(is.na(area), preds, area)]
+  # or completely smoothing
+  data3D[,area := preds]
   
-  # Missing imputation (kNN doesnt work with many NAs)
-  preds <- predict(preProcess(data3D, method="bagImpute"), newdata=data3D)
-  data3D[,area := ifelse(is.na(area), preds$area, area)]                   # normal 'bag' imputation
-  data3D[,area := ifelse(is.na(area), mean(area, na.rm=T), area),by=Slice] # there could still be NA/NaN's left
-  data3D[,area := ifelse(is.na(area), mean(area, na.rm=T), area)]          # first try by Slice, if still missing, do global
+  # In case there's still NA/NaN's left, first do mean by Slice, if still missing, do global
+  data3D[,area := ifelse(is.na(area), mean(area, na.rm=T), area),by=Slice] 
+  data3D[,area := ifelse(is.na(area), mean(area, na.rm=T), area)]          
   
   print(wireframe(area ~ Time*SliceLocation, data=data3D,
                   shade=T, col.regions = terrain.colors(100), 
@@ -309,10 +329,11 @@ timeData <- group_by(imageData, Id, Time) %>%
   dplyr::summarise(volume = sum(SliceThickness*area, na.rm=T),
                    lvConfidence = mean(pLV, na.rm=T),
                    segmentMissingRatio = mean(RatioMissing, na.rm=T),
-                   #volumeEllipse = sum(SliceThickness*area.ellipse, na.rm=T),
-                   #volumeMax  = sum(SliceThickness*pi*radius.max^2, na.rm=T),
-                   #volumeMin  = sum(SliceThickness*pi*radius.min^2, na.rm=T),
-                   #volumeMean = sum(SliceThickness*pi*radius.mean^2, na.rm=T),
+                   volumeEllipse = sum(SliceThickness*area.ellipse, na.rm=T),
+                   volumeMax  = sum(SliceThickness*pi*radius.max^2, na.rm=T),
+                   volumeMin  = sum(SliceThickness*pi*radius.min^2, na.rm=T),
+                   volumeMean = sum(SliceThickness*pi*radius.mean^2, na.rm=T),
+                   
                    isLV = any(isLV))
 print(ggplot(filter(timeData, Id %in% sampleIds), aes(x=Time, y=volume, colour=factor(Id)))+geom_line()+geom_point()+
         ggtitle("Volume over Time"))
@@ -332,17 +353,17 @@ caseData <- left_join(caseList, group_by(timeData, Id) %>%
                           lvConfidence = mean(lvConfidence, na.rm=T),
                           segmentMissingRatio = mean(segmentMissingRatio, na.rm=T),
                           
-                          #max_volumeEllipse = max(volumeEllipse, na.rm=T),
-                          #min_volumeEllipse = min(volumeEllipse, na.rm=T),
+                          max_volumeEllipse = max(volumeEllipse, na.rm=T),
+                          min_volumeEllipse = min(volumeEllipse, na.rm=T),
                           
-                          #max_volumeMax = max(volumeMax, na.rm=T),
-                          #min_volumeMax = min(volumeMax, na.rm=T),
+                          max_volumeMax = max(volumeMax, na.rm=T),
+                          min_volumeMax = min(volumeMax, na.rm=T),
                           
-                          #max_volumeMin = max(volumeMin, na.rm=T),
-                          #min_volumeMin = min(volumeMin, na.rm=T),
+                          max_volumeMin = max(volumeMin, na.rm=T),
+                          min_volumeMin = min(volumeMin, na.rm=T),
                           
-                          #max_volumeMean = max(volumeMean, na.rm=T),
-                          #min_volumeMean = min(volumeMean, na.rm=T),
+                          max_volumeMean = max(volumeMean, na.rm=T),
+                          min_volumeMean = min(volumeMean, na.rm=T),
                           
                           isLV = any(isLV)), 
                       by="Id")
@@ -486,3 +507,22 @@ for (i in seq(nrow(trainVolumes))) {
 }
 crps <- crps/nrow(trainProbabilities)/MAXVOLUME
 cat("CRPS score on train set:", crps,fill=T)
+
+
+stop("experiments")
+require(mgcv)
+
+similarityData <- select(data3D, SliceLocation, Time, area)
+similarityData[area==0, area := NA]
+data <- spread(similarityData, Time, area)
+View(data)
+print(wireframe(area ~ Time*SliceLocation, data=similarityData,
+                shade=T, col.regions = terrain.colors(100)))
+b1 <- gam(area ~ s(Time,SliceLocation), data=similarityData) # looks ok!
+vis.gam(b1,ticktype="detailed",phi=30,theta=-30)
+predict(b1, similarityData)
+
+# tensor smoother
+b2 <- gam(area ~ te(Time,SliceLocation,bs=c("tp", "tp")), data=similarityData)
+vis.gam(b2,ticktype="detailed",phi=30,theta=-30)
+

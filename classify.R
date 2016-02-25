@@ -120,7 +120,7 @@ createSegmentModelAndApply <- function(train, test)
   xgb.save(leftVentricleSegmentModel, 'lv.xgb.model')
   
   imp_matrix <- xgb.importance(feature_names = names(select(train, -isLV)), model = leftVentricleSegmentModel)
-  print(imp_matrix)
+  print(head(imp_matrix))
   print(xgb.plot.importance(importance_matrix = imp_matrix))
   
   probLV <- predict(leftVentricleSegmentModel, data.matrix(test), missing=NaN) #, missing=NaN)
@@ -185,11 +185,6 @@ for (sliceIndex in seq(nrow(promptSlices))) {
                                 -starts_with("s.")), 
                          by=c("Id", "Slice", "Time", "UUID"))
     
-    # Quick report on the segmentation prediction data set.
-    cat("Segment predict set has",nrow(segPredictSet),"observations with a pos rate of",sum(segPredictSet$isLV,na.rm=T)/nrow(segPredictSet),fill=T)
-    cat("   number of Ids   :",nrow(unique(select(segPredictSet,Id))),"with identified LV",nrow(unique(select(filter(segPredictSet,isLV),Id))),fill=T)
-    cat("   number of Slices:",nrow(unique(select(segPredictSet,Id,Slice))),"with identified LV",nrow(unique(select(filter(segPredictSet,isLV),Id,Slice))),fill=T)
-    cat("   number of Images:",nrow(unique(select(segPredictSet,Id,Slice,Time))),"with identified LV",nrow(unique(select(filter(segPredictSet,isLV),Id,Slice,Time))),fill=T)
   }
   slice$pLV <- createSegmentModelAndApply(predSet, slice)
   
@@ -216,8 +211,8 @@ for (sliceIndex in seq(nrow(promptSlices))) {
     showSingleImage(segmentsFirstImage) 
     showSegmentLabels(segmentsFirstImage)
     showSegmentLabels(segmentsFirstImage[which.max(segmentProbs),],textColour="green")
-    indexOfLVSegment <- readInteger(paste("Identify Left Ventricle in image",
-                                          firstImageIndex,
+    print("Identify Left Ventricle in image")
+    indexOfLVSegment <- readInteger(paste(firstImageIndex,
                                           "(0=none, -1=skip image, -2=skip slice, -3=all none (wrong ROI))): "))
     
     if (indexOfLVSegment < 1) {
@@ -325,28 +320,13 @@ for (sliceIndex in seq(nrow(promptSlices))) {
                                         Id %in% newData$Id)), 
                              newData)
     }
-    
-    print("Progress:")
-    segmentedByID <- left_join(getIdList(playlist=imageList), 
-                               unique(select(segPredictSet, Id, isLV)), by=c("Id")) %>% 
-      group_by(Dataset, Id) %>% summarise(hasSegs = any(isLV))
-    segmentedBySlice <- left_join(getSliceList(playlist=imageList), 
-                                  unique(select(segPredictSet, Id, Slice, isLV)), by=c("Id", "Slice")) %>% 
-      group_by(Dataset, Id, Slice) %>% summarise(hasSegs = any(isLV))
-    segmentedByImage <- left_join(getImageList(playlist=imageList), 
-                                  unique(select(segPredictSet, Id, Slice, Time, isLV)), by=c("Id", "Slice", "Time")) %>% 
-      group_by(Dataset, Id, Slice, Time) %>% summarise(hasSegs = any(isLV))
-    
-    classificationProgress <- data.frame(segmented = c(sum(segmentedByID$hasSegs,na.rm=T),
-                                                       sum(segmentedBySlice$hasSegs,na.rm=T),
-                                                       sum(segmentedByImage$hasSegs,na.rm=T)),
-                                         total = c(nrow(segmentedByID),
-                                                   nrow(segmentedBySlice),
-                                                   nrow(segmentedByImage)))
-    classificationProgress <- mutate(classificationProgress,
-                                     percentage = paste(round(100*segmented/total,2),"%",sep=""))
-    rownames(classificationProgress) <- c('By ID','By Slice','By Image')
-    print(classificationProgress)
+
+    # Quick report on the segmentation prediction data set.
+    print("Writing")
+    cat("   segments        :",nrow(segPredictSet),"with identified LV",nrow(filter(segPredictSet,!is.na(isLV))),"with a pos rate of",sum(segPredictSet$isLV,na.rm=T)/nrow(segPredictSet),"(",sum(segPredictSet$isLV,na.rm=T),")",fill=T)
+    cat("   number of Ids   :",nrow(unique(select(segPredictSet,Id))),"with identified LV",nrow(unique(select(filter(segPredictSet,isLV),Id))),fill=T)
+    cat("   number of Slices:",nrow(unique(select(segPredictSet,Id,Slice))),"with identified LV",nrow(unique(select(filter(segPredictSet,isLV),Id,Slice))),fill=T)
+    cat("   number of Images:",nrow(unique(select(segPredictSet,Id,Slice,Time))),"with identified LV",nrow(unique(select(filter(segPredictSet,isLV),Id,Slice,Time))),fill=T)
     
     write.csv(segPredictSet, segPredictFile, row.names=F)
   }
