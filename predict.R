@@ -396,7 +396,7 @@ casePredictSetTrain <- filter(casePredictSet,
 
 # Run repeatedly to get a distribution of the predictions and a validation error indication
 nSamples <- 100
-doTuning <- F
+doTuning <- T
 rmse_systole <- rep(NA, nSamples)
 rmse_diastole <- rep(NA, nSamples)
 for (i in seq(nSamples)) {
@@ -424,10 +424,10 @@ for (i in seq(nSamples)) {
     print(ggplot(diastole_model))
     print(ggplot(varImp(diastole_model)))
   } else {
-    fixedTuningParams <- data.frame(interaction.depth = 2,
-                                    n.trees = 37,
+    fixedTuningParams <- data.frame(interaction.depth = 3,
+                                    n.trees = 50,
                                     shrinkage = 0.1,
-                                    n.minobsinnode = 20)
+                                    n.minobsinnode = 10)
     systole_model <- train(Systole ~ ., data = select(casePredictSetTrainDev, -Diastole), 
                            method = "gbm", trControl = trainControl(method = "none"), verbose=F, 
                            preProcess="knnImpute",
