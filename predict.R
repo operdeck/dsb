@@ -9,7 +9,13 @@
 
 # 0 - LB 0.036205 / local score .023 or something like that (strongly overfitting?)
 # 1 - see what improvement is with just better segmentation data ()
+#     LB 0.033975 / local score 0.02804779 / avg val error Sys 33.16965, Dia 39.21235
 # 2 - what if not doing outlier detection, just smoothing
+#     LB 0.038827 - so NOT a good idea, keep outlier detection
+#     now back to local score 0.02822668 / Avg error 29.5967 37.08891 / Corr 0.7989748 0.841306
+#     LB 0.035878 after "fixing" a bug that did not set area to 0 for low pLV (threshold 0.2)
+#       local score was 0.02582455 / Avg error 28.09956 37.11775 / Corr 0.8361123 0.8583229
+#       ==> set threshold even lower (0.1 instead of 0.2) or should it be NA ??
 # 3 - what if just imputation, not smoothing
 # 4 - what if using simple lm / glm instead of gbm
 # 5 - what if smoothing also for other predictors than area
@@ -24,11 +30,7 @@ library(DMwR) # outlier detection
 require(mgcv) # 3D smoothing
 
 # Threshold for LV segment probability
-pSegmentThreshold <- 0.2
-
-# Threshold for missing segments (excludes cases from being used in train set of final models)
-# (missing ratio should be lower than this threshold)
-segmentMissingThreshold <- 0.80
+pSegmentThreshold <- 0.1
 
 # Used both in segment and case prediction
 validationPercentage <- 0.20
@@ -231,92 +233,107 @@ print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_b
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
 # If probability of pLV is too low, assume the segment is zero size. 
-allSegments[pLV < pSegmentThreshold, s.area := 0]
+imputeFieldNames <- c("area", "area.ellipse", "radius.max", "radius.mean", "radius.min")
+for (imputeFieldName in imputeFieldNames) {
+  imageData[pLV < pSegmentThreshold, c(imputeFieldName) := c(0)]
+}
 
 # Data cleansing: outlier detection and missing value imputation
-# Currently only doing this for "area". Potentially do the same for the other - potential - predictors
-# with outliers/missing values: area.ellipse, radius.max, radius.min, radius.mean
 # if so, make sure to set those to NA or zero as well when pLV is too low
-zRange <- range(0: quantile(imageData$area, na.rm=T, p=0.90)) 
-for (plotId in unique(imageData$Id)) {
-  data3D <- imageData[Id == plotId, sapply(imageData, is.numeric), with=F]
+imageData$RatioOutlier <- 0.0
+imageData$RatioMissing <- 0.0
+for (imputeFieldName in imputeFieldNames) {
+  zRange <- range(0: quantile(imageData[[imputeFieldName]], na.rm=T, p=0.90)) 
   
-  # View raw data - with missing and outliers
-  print(wireframe(area ~ Time*SliceLocation, data=data3D,
-                  shade=T, col.regions = terrain.colors(100), 
-                  main=paste("Raw Id=",plotId),
-                  zlim=zRange))
-  
-  # Outliers removal by time and slice (TODO cant we do this at once somehow?)
-  similarityData <- select(data3D, SliceLocation, Time, area)
-  nOutliers <- 0
-  for (t in unique(similarityData$Time)) {
-    d <- similarityData[Time==t]$area
-    if (sum(!is.na(d)) > 3) {
-      outlier.scores <- lofactor(na.omit(d), k=3)
-      #plot(density(outlier.scores))
-      outliers <- which(!is.na(d))[which(outlier.scores > 3.0)] # somewhat arbitrary
-      nOutliers <- nOutliers + length(outliers)
-      outlierSlices <- similarityData[Time==t]$SliceLocation[outliers]
-      data3D[Time==t & SliceLocation %in% outlierSlices, area := NA]
+  for (plotId in unique(imageData$Id)) {
+    data3D <- imageData[Id == plotId, sapply(imageData, is.numeric), with=F]
+    data3D$imputeField <- data3D[[imputeFieldName]]
+    
+    # View raw data - with missing and outliers
+    print(wireframe(imputeField ~ Time*SliceLocation, data=data3D,
+                    shade=T, col.regions = terrain.colors(100), 
+                    main=paste("Raw Id=",plotId),
+                    zlim=zRange))
+    
+    # Outliers removal by time and slice (TODO cant we do this at once somehow?)
+    similarityData <- select(data3D, SliceLocation, Time, imputeField)
+    nOutliers <- 0
+    
+    doOutlierDetection <- T
+    
+    if (doOutlierDetection) {
+      for (t in unique(similarityData$Time)) {
+        d <- similarityData[Time==t]$imputeField
+        if (sum(!is.na(d)) > 3) {
+          outlier.scores <- lofactor(na.omit(d), k=3)
+          #plot(density(outlier.scores))
+          outliers <- which(!is.na(d))[which(outlier.scores > 3.0)] # somewhat arbitrary
+          nOutliers <- nOutliers + length(outliers)
+          outlierSlices <- similarityData[Time==t]$SliceLocation[outliers]
+          data3D[Time==t & SliceLocation %in% outlierSlices, imputeField := NA]
+        }
+      }
+      
+      for (s in unique(similarityData$SliceLocation)) {
+        d <- similarityData[SliceLocation==s]$imputeField
+        if (sum(!is.na(d)) > 3) {
+          outlier.scores <- lofactor(na.omit(d), k=3)
+          #plot(density(outlier.scores))
+          outliers <- which(!is.na(d))[which(outlier.scores > 3.0)] # somewhat arbitrary
+          nOutliers <- nOutliers + length(outliers)
+          outlierTimes <- similarityData[SliceLocation==s]$Time[outliers]
+          data3D[SliceLocation==s & Time %in% outlierTimes, imputeField := NA]
+        }
+      }
     }
-  }
+    
+    outlierRatio <- nOutliers/(length(unique(similarityData$Time))*length(unique(similarityData$Slice)))
+    missingRatio <- sum(is.na(data3D$imputeField))/length(data3D$imputeField)
+    cat("Id", plotId, "$", imputeFieldName,
+        "outliers", paste(round(100*outlierRatio,1),"%",sep=""), 
+        "missing", paste(round(100*missingRatio,1),"%",sep=""), fill=T)
+    
+    #   outlier.scores <- lofactor(scale(similarityData[which(complete.cases(similarityData))]), k=5)
+    #   #plot(density(outlier.scores))
+    #   outliers <- which(complete.cases(similarityData))[which(outlier.scores > 1.2)]
+    #   cat("Outliers:",outliers,fill=T)
+    #   data3D$area[outliers] <- NA
+    
+    print(wireframe(imputeField ~ Time*SliceLocation, data=data3D,
+                    shade=T, col.regions = terrain.colors(100), 
+                    main=paste("Outliers Removed Id=",plotId), 
+                    zlim=zRange, zlab=imputeFieldName))
   
-  for (s in unique(similarityData$SliceLocation)) {
-    d <- similarityData[SliceLocation==s]$area
-    if (sum(!is.na(d)) > 3) {
-      outlier.scores <- lofactor(na.omit(d), k=3)
-      #plot(density(outlier.scores))
-      outliers <- which(!is.na(d))[which(outlier.scores > 3.0)] # somewhat arbitrary
-      nOutliers <- nOutliers + length(outliers)
-      outlierTimes <- similarityData[SliceLocation==s]$Time[outliers]
-      data3D[SliceLocation==s & Time %in% outlierTimes, area := NA]
+    # Missing imputation (kNN doesnt work with many NAs, caret bag is very slow)
+    # anisotropic penalised regression splines
+    b1 <- gam(imputeField ~ s(Time,SliceLocation), data=data3D)
+    #vis.gam(b1,ticktype="detailed",phi=30,theta=-30) # also nice vizualation
+    #title(paste("Missings Imputed Id=",plotId))
+    preds <- predict(b1, similarityData)
+    #preds <- predict(preProcess(data3D, method="bagImpute"), newdata=data3D)
+  
+    # only for the NA's
+    #data3D[,area := ifelse(is.na(area), preds, area)]
+    # or completely smoothing
+    data3D[,imputeField := preds]
+    
+    # In case there's still NA/NaN's left, first do mean by Slice, if still missing, do global
+    data3D[,imputeField := ifelse(is.na(imputeField), mean(imputeField, na.rm=T), imputeField),by=Slice] 
+    data3D[,imputeField := ifelse(is.na(imputeField), mean(imputeField, na.rm=T), imputeField)]          
+    
+    print(wireframe(imputeField ~ Time*SliceLocation, data=data3D,
+                    shade=T, col.regions = terrain.colors(100), 
+                    main=paste("Missings Imputed Id=",plotId), 
+                    zlim=zRange, zlab=imputeFieldName))
+    
+    # copy imputed and smoothed data back to imageData
+    for (i in seq(nrow(data3D))) {
+      imageData[Id == data3D[i]$Id & Slice == data3D[i]$Slice & Time == data3D[i]$Time, 
+                c(imputeFieldName) := list(data3D[i]$imputeField) ]
     }
+    imageData[Id == data3D[i]$Id, c("RatioOutlier","RatioMissing") := list(RatioOutlier + outlierRatio/length(imputeFieldNames),
+                                                                           RatioMissing + missingRatio/length(imputeFieldNames))]
   }
-  outlierRatio <- nOutliers/(length(unique(similarityData$Time))*length(unique(similarityData$Slice)))
-  missingRatio <- sum(is.na(data3D$area))/length(data3D$area)
-  cat("Id", plotId, 
-      "outliers", paste(round(100*outlierRatio,1),"%",sep=""), 
-      "missing", paste(round(100*missingRatio,1),"%",sep=""), fill=T)
-  
-  #   outlier.scores <- lofactor(scale(similarityData[which(complete.cases(similarityData))]), k=5)
-  #   #plot(density(outlier.scores))
-  #   outliers <- which(complete.cases(similarityData))[which(outlier.scores > 1.2)]
-  #   cat("Outliers:",outliers,fill=T)
-  #   data3D$area[outliers] <- NA
-  
-  print(wireframe(area ~ Time*SliceLocation, data=data3D,
-                  shade=T, col.regions = terrain.colors(100), 
-                  main=paste("Outliers Removed Id=",plotId), 
-                  zlim=zRange))
-
-  # Missing imputation (kNN doesnt work with many NAs, caret bag is very slow)
-  # anisotropic penalised regression splines
-  b1 <- gam(area ~ s(Time,SliceLocation), data=data3D)
-  #vis.gam(b1,ticktype="detailed",phi=30,theta=-30) # also nice vizualation
-  #title(paste("Missings Imputed Id=",plotId))
-  preds <- predict(b1, similarityData)
-  #preds <- predict(preProcess(data3D, method="bagImpute"), newdata=data3D)
-
-  # only for the NA's
-  #data3D[,area := ifelse(is.na(area), preds, area)]
-  # or completely smoothing
-  data3D[,area := preds]
-  
-  # In case there's still NA/NaN's left, first do mean by Slice, if still missing, do global
-  data3D[,area := ifelse(is.na(area), mean(area, na.rm=T), area),by=Slice] 
-  data3D[,area := ifelse(is.na(area), mean(area, na.rm=T), area)]          
-  
-  print(wireframe(area ~ Time*SliceLocation, data=data3D,
-                  shade=T, col.regions = terrain.colors(100), 
-                  main=paste("Missings Imputed Id=",plotId), 
-                  zlim=zRange))
-  
-  # copy imputed and smoothed data back to imageData
-  for (i in seq(nrow(data3D))) {
-    imageData[Id == data3D[i]$Id & Slice == data3D[i]$Slice & Time == data3D[i]$Time, area := data3D[i]$area ]
-  }
-  imageData[Id == data3D[i]$Id, c("RatioOutlier","RatioMissing") := list(outlierRatio,missingRatio)]
 }
 
 # for later use
@@ -398,8 +415,7 @@ casePredictSet <- select(caseData,
 
 casePredictSetTrain <- filter(casePredictSet, 
                               !is.na(casePredictSet$Systole),
-                              !is.na(casePredictSet$Diastole),
-                              caseData$segmentMissingRatio < segmentMissingThreshold) # exclude very bad images from prediction set
+                              !is.na(casePredictSet$Diastole))
 
 # Run repeatedly to get a distribution of the predictions and a validation error indication
 nSamples <- 20
@@ -465,8 +481,8 @@ for (i in seq(nSamples)) {
 }
 dimnames(preds_systole) <- list(1:nSamples,caseData$Id)
 dimnames(preds_diastole) <- list(1:nSamples,caseData$Id)
-cat("Average error on Systole on validation set:", mean(rmse_systole))
-cat("Average error on Diastole on validation set:", mean(rmse_diastole))
+cat("Average error on Systole on validation set:", mean(rmse_systole),fill=T)
+cat("Average error on Diastole on validation set:", mean(rmse_diastole),fill=T)
 print(ggplot(gather(data.frame(rmse_systole, rmse_diastole),measure,RMSE), aes(x=RMSE, colour=measure))+geom_density()+ggtitle("RMSE on Validation Set"))
 
 # Cumulative probabilities, for all cases
