@@ -7,6 +7,13 @@
 # Volume = sum area * slice thickness over slices for a certain Time
 # Min and Max volumes are the systole/diastole values
 
+# 0 - LB 0.036205 / local score .023 or something like that (strongly overfitting?)
+# 1 - see what improvement is with just better segmentation data ()
+# 2 - what if not doing outlier detection, just smoothing
+# 3 - what if just imputation, not smoothing
+# 4 - what if using simple lm / glm instead of gbm
+# 5 - what if smoothing also for other predictors than area
+
 source("util.R")
 
 library(caret)
@@ -395,8 +402,8 @@ casePredictSetTrain <- filter(casePredictSet,
                               caseData$segmentMissingRatio < segmentMissingThreshold) # exclude very bad images from prediction set
 
 # Run repeatedly to get a distribution of the predictions and a validation error indication
-nSamples <- 100
-doTuning <- T
+nSamples <- 20
+doTuning <- F
 rmse_systole <- rep(NA, nSamples)
 rmse_diastole <- rep(NA, nSamples)
 for (i in seq(nSamples)) {
@@ -508,21 +515,4 @@ for (i in seq(nrow(trainVolumes))) {
 crps <- crps/nrow(trainProbabilities)/MAXVOLUME
 cat("CRPS score on train set:", crps,fill=T)
 
-
-stop("experiments")
-require(mgcv)
-
-similarityData <- select(data3D, SliceLocation, Time, area)
-similarityData[area==0, area := NA]
-data <- spread(similarityData, Time, area)
-View(data)
-print(wireframe(area ~ Time*SliceLocation, data=similarityData,
-                shade=T, col.regions = terrain.colors(100)))
-b1 <- gam(area ~ s(Time,SliceLocation), data=similarityData) # looks ok!
-vis.gam(b1,ticktype="detailed",phi=30,theta=-30)
-predict(b1, similarityData)
-
-# tensor smoother
-b2 <- gam(area ~ te(Time,SliceLocation,bs=c("tp", "tp")), data=similarityData)
-vis.gam(b2,ticktype="detailed",phi=30,theta=-30)
 
