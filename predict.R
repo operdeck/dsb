@@ -8,17 +8,23 @@
 # Min and Max volumes are the systole/diastole values
 
 # 0 - LB 0.036205 / local score .023 or something like that (strongly overfitting?)
-# 1 - see what improvement is with just better segmentation data ()
+# * - see what improvement is with just better segmentation data ()
 #     LB 0.033975 / local score 0.02804779 / avg val error Sys 33.16965, Dia 39.21235
-# 2 - what if not doing outlier detection, just smoothing
-#     LB 0.038827 - so NOT a good idea, keep outlier detection
+#   ==> better segmentation data helps
+# * - what if not doing outlier detection, just smoothing
+#     LB 0.038827
+#   ==> keep outlier detection
 #     now back to local score 0.02822668 / Avg error 29.5967 37.08891 / Corr 0.7989748 0.841306
-#     LB 0.035878 after "fixing" a bug that did not set area to 0 for low pLV (threshold 0.2)
+# *   LB 0.035878 after "fixing" a bug that did not set area to 0 for low pLV (threshold 0.2)
 #       local score was 0.02582455 / Avg error 28.09956 37.11775 / Corr 0.8361123 0.8583229
-#       ==> set threshold even lower (0.1 instead of 0.2) or should it be NA ??
-# 3 - what if just imputation, not smoothing
-# 4 - what if using simple lm / glm instead of gbm
-# 5 - what if smoothing also for other predictors than area
+#   ==> set pLV threshold even lower (0.1 instead of 0.2) or should it be NA ??
+# * - what if smoothing also for other predictors than area
+#     LB 0.035684 / Local 0.02642635 / Avg error 30.67679 37.77851 / Corr 0.8372744 0.8607076
+#   ==> using other than area minimal effect
+# * - even more segmentation results
+#     LB 0.033614 / Local 0.02567658 / Avg error 32.26049 32.26049 / Corr 0.8202784 0.8632017
+# * - what if just imputation, not smoothing
+# * - what if using simple lm / glm instead of gbm
 
 source("util.R")
 
@@ -30,7 +36,8 @@ library(DMwR) # outlier detection
 require(mgcv) # 3D smoothing
 
 # Threshold for LV segment probability
-pSegmentThreshold <- 0.1
+#pSegmentThreshold <- 0.1
+pSegmentThreshold <- 0.0
 
 # Used both in segment and case prediction
 validationPercentage <- 0.20
@@ -233,7 +240,9 @@ print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_b
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
 # If probability of pLV is too low, assume the segment is zero size. 
-imputeFieldNames <- c("area", "area.ellipse", "radius.max", "radius.mean", "radius.min")
+#imputeFieldNames <- c("area", "area.ellipse", "radius.max", "radius.mean", "radius.min")
+imputeFieldNames <- c("area")
+
 for (imputeFieldName in imputeFieldNames) {
   imageData[pLV < pSegmentThreshold, c(imputeFieldName) := c(0)]
 }
