@@ -23,6 +23,8 @@
 #   ==> using other than area minimal effect
 # * - even more segmentation results
 #     LB 0.033614 / Local 0.02567658 / Avg error 32.26049 32.26049 / Corr 0.8202784 0.8632017
+# attempt with pLV threshold 0.1 (vs 0)
+#     LB 0.034568 --> so not a great idea, switching back
 # * - what if just imputation, not smoothing
 # * - what if using simple lm / glm instead of gbm
 
