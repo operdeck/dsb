@@ -274,7 +274,7 @@ if (!is.null(allSegments)) {
 imageList$Random <- runif(nrow(imageList))
 # imageList$SpecialOrder <- ifelse(T, imageList$SliceOrder, 1+max(imageList$SliceOrder))
 # imageList <- arrange(imageList, isProcessed, SpecialOrder, Random) %>% select(-Random, -SpecialOrder)
-imageList <- arrange(imageList, isProcessed, Random) %>% select(-Random)
+imageList <- arrange(imageList, isProcessed, SliceOrder, Id) %>% select(-Random)
 
 # Process images per slice. Image of the same slice (usually) have same dimensions, location etc
 sliceList <- unique(select(imageList, Dataset, Id, ImgType, starts_with("Slice")))
