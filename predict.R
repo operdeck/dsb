@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Make predictions of Systole and Diastole for all datasets.
 
 # Uses "segments-classified.csv" to create a model to help find LV segments, then filters and
@@ -559,5 +560,3 @@ for (i in seq(nrow(trainVolumes))) {
 }
 crps <- crps/nrow(trainProbabilities)/MAXVOLUME
 cat("CRPS score on train set:", crps,fill=T)
-
-
