@@ -26,6 +26,26 @@
 # * - what if just imputation, not smoothing
 # * - what if using simple lm / glm instead of gbm
 
+# Total new segmentation
+# LB 0.032663
+# Average error on Systole on validation set: 25.48068
+# Average error on Diastole on validation set: 31.72199
+# Creating submission scores for range 1001 1400
+# Correlations on 500 cases:
+#   [1] 0.8634994
+# [1] 0.8906129
+# CRPS score on train set: 0.02275966
+
+# pLV 0.1 ipv 0.0
+# LB 0.032257
+# Average error on Systole on validation set: 23.91543
+# Average error on Diastole on validation set: 32.43053
+# Creating submission scores for range 1001 1400
+# Correlations on 500 cases:
+#   [1] 0.8757999
+# [1] 0.8925369
+# CRPS score on train set: 0.02262955
+
 source("util.R")
 
 library(caret)
@@ -37,7 +57,7 @@ require(mgcv) # 3D smoothing
 
 # Threshold for LV segment probability
 #pSegmentThreshold <- 0.1
-pSegmentThreshold <- 0.0
+pSegmentThreshold <- 0.1
 
 # Used both in segment and case prediction
 validationPercentage <- 0.20
