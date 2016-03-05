@@ -14,11 +14,7 @@ gc()
 segPredictFile <- "segments-predict.csv"
 
 # Id's of images that need re-classification because of manual error. All slices will be discarded.
-
-# too big ROI: 341
-# wrong ROI: 238, 259, 441
-# poor seg: 480
-redoClassificationIdList <- c() # c(238,259,341,480) # list the ID's here
+redoClassificationIdList <- c() #c(66,95,101,116,117,125,134,143,164,181,183,184,188,231,238,243,247,259,277,280,283,287,294,295,301,304,305,306,325,341,344,370,379,381,389,391,393,398,399,400,403,405,427,441,449,464,473,487,489) # c(238,259,341,480) # list the ID's here
 
 # TODO maybe matching UUID's (re-segmented) should take priority 
 # TODO auto detect classified images with no LV segments
@@ -191,9 +187,12 @@ for (sliceIndex in seq(nrow(promptSlices))) {
   # list of images in this slice that need processing
   unProcessedImageIndices <- unique(slice$Time)
   while (length(unProcessedImageIndices) > 0) {
-    cat("Id=",promptSlices$Id[sliceIndex],"Slice=",promptSlices$Slice[sliceIndex],
+    cat("Processing",unique(slice$Id),"slice",unique(slice$Slice),
+        paste("(",unique(slice$SliceIndex), "/", unique(slice$SliceCount), " order:", unique(slice$SliceOrder), ")", sep=""),
         "#Images:",length(unique(slice$Time)),
-        "#Segments:",nrow(slice),fill=T)
+        "#Segments:",nrow(slice),
+        promptSlices$ReDo[sliceIndex],
+        fill=T)
     cat(length(unProcessedImageIndices),"images:",unProcessedImageIndices,fill=T)
     firstImageIndex <- unProcessedImageIndices[1] # all segments of first image
     if (length(unProcessedImageIndices) > 1) { # all segments of rest of images

@@ -24,11 +24,11 @@ x.train <- train[inTrain, ]
 x.test <- train[-inTrain, ]
 
 xgb.grid <- expand.grid(nrounds=1:10 * 10,
-                        max_depth=seq(4,10,by=2),
-                        eta=1:3 * 0.1,
+                        max_depth=6,#seq(4,10,by=2),
+                        eta=0.2,#1:3 * 0.1,
                         gamma=1,
                         colsample_bytree=1,
-                        min_child_weight=5)
+                        min_child_weight=seq(1,10,by=2))
 
 ctrl <- trainControl(
   method = "repeatedcv", # 10-fold repeated CV

@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Make predictions of Systole and Diastole for all datasets.
 
 # Uses "segments-classified.csv" to create a model to help find LV segments, then filters and
@@ -47,6 +46,46 @@
 # [1] 0.8925369
 # CRPS score on train set: 0.02262955
 
+# setting to NA instead of 0 if below threshold
+# 0.033411 --> not an improvement
+# Average error on Systole on validation set: 23.99993
+# Average error on Diastole on validation set: 32.07489
+# Creating submission scores for range 1001 1400
+# Correlations on 500 cases:
+#   [1] 0.8607654
+# [1] 0.884918
+# CRPS score on train set: 0.02311668
+
+# More classification ==> didnt help?!
+# LB  0.032636
+# Average error on Systole on validation set: 23.353
+# Average error on Diastole on validation set: 32.38319
+# Creating submission scores for range 1001 1400
+# Correlations on 500 cases:
+#   [1] 0.8783367
+# [1] 0.8928728
+# CRPS score on train set: 0.02221571
+
+# pLV threshold at 1.5 ==> small improvement maybe
+# 0.032379
+# Average error on Systole on validation set: 26.08395
+# Average error on Diastole on validation set: 33.38799
+# Creating submission scores for range 1001 1400
+# Correlations on 500 cases:
+#   [1] 0.8820561
+# [1] 0.8941455
+# CRPS score on train set: 0.02196425
+
+# imputeFieldNames all fields, pLV threshold 1.5, back to previous classification set
+# LB 0.031747
+# Average error on Systole on validation set: 24.99006
+# Average error on Diastole on validation set: 33.35922
+# Creating submission scores for range 1001 1400
+# Correlations on 500 cases:
+#   [1] 0.8733627
+# [1] 0.8891473
+# CRPS score on train set: 0.02295507
+
 source("util.R")
 
 library(caret)
@@ -57,8 +96,8 @@ library(DMwR) # outlier detection
 require(mgcv) # 3D smoothing
 
 # Threshold for LV segment probability
-#pSegmentThreshold <- 0.1
-pSegmentThreshold <- 0.1
+pSegmentThreshold <- 0.2
+defaultArea <- 0 # replacement value when pLV below threshold
 
 # Used both in segment and case prediction
 validationPercentage <- 0.20
@@ -261,11 +300,11 @@ print(ggplot(imageData, aes(x=pLeftVentricle, fill=factor(SliceOrder))) + geom_b
         theme(axis.text.x = element_text(angle = 45, hjust = 1)))
 
 # If probability of pLV is too low, assume the segment is zero size. 
-#imputeFieldNames <- c("area", "area.ellipse", "radius.max", "radius.mean", "radius.min")
-imputeFieldNames <- c("area")
+imputeFieldNames <- c("area", "area.ellipse", "radius.max", "radius.mean", "radius.min")
+# imputeFieldNames <- c("area")
 
 for (imputeFieldName in imputeFieldNames) {
-  imageData[pLV < pSegmentThreshold, c(imputeFieldName) := c(0)]
+  imageData[pLV < pSegmentThreshold, c(imputeFieldName) := c(defaultArea)]
 }
 
 # Data cleansing: outlier detection and missing value imputation
