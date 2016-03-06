@@ -111,6 +111,11 @@
 # [1] 0.8907102
 # CRPS score on train set: 0.02272002
 
+# TODO
+# p10/p90 instead of min/max
+# pLV threshold larger
+# min observations
+
 source("util.R")
 
 library(caret)
@@ -431,7 +436,7 @@ for (imputeFieldName in imputeFieldNames) {
 }
 
 # for later use
-write.csv(imageData, 'imageData-imputed.csv', row.names=F)
+# write.csv(imageData, 'imageData-imputed.csv', row.names=F)
 
 #
 # Plot some graphs
