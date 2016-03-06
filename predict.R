@@ -86,6 +86,31 @@
 # [1] 0.8891473
 # CRPS score on train set: 0.02295507
 
+# Different GBM tuning, 20 rounds
+# LB = 0.032339 (overfitting?)
+# Average error on Systole on validation set: 24.38146
+# Average error on Diastole on validation set: 31.37729
+# [1] 0.8949208
+# [1] 0.9064123
+# CRPS score on train set: 0.02274522
+
+# 100 rounds…
+# LB = 0.032074 (best 0.031747)
+# Average error on Systole on validation set: 24.58165
+# Average error on Diastole on validation set: 32.68044
+# [1] 0.8964039
+# [1] 0.905866
+# CRPS score on train set: 0.02245511
+
+# Old GBM settings, 100 rounds
+# LB = 0.031626
+# Average error on Systole on validation set: 25.00166
+# Average error on Diastole on validation set: 32.84126
+# Correlations on 500 cases:
+#   [1] 0.8728571
+# [1] 0.8907102
+# CRPS score on train set: 0.02272002
+
 source("util.R")
 
 library(caret)
@@ -487,7 +512,7 @@ casePredictSetTrain <- filter(casePredictSet,
                               !is.na(casePredictSet$Diastole))
 
 # Run repeatedly to get a distribution of the predictions and a validation error indication
-nSamples <- 20
+nSamples <- 100
 doTuning <- F
 rmse_systole <- rep(NA, nSamples)
 rmse_diastole <- rep(NA, nSamples)
@@ -501,20 +526,22 @@ for (i in seq(nSamples)) {
   if (doTuning) {
     fitControl <- trainControl(
       method = "repeatedcv", # 10-fold repeated CV
-      number = 10,
-      repeats = 10)
-    gbmGrid <-  expand.grid(interaction.depth = 1:5, # 3
-                            n.trees = (1:20)*5, # 50
-                            shrinkage = 0.1,
-                            n.minobsinnode = 20)
+      number = 5,
+      repeats = 2)
+    gbmGrid <-  expand.grid(interaction.depth = 3, # 3
+                            n.trees = (1:10)*5, # 50
+                            shrinkage = seq(0.05,0.2,by=0.05),
+                            n.minobsinnode = seq(10,20,by=5))
     systole_model <- train(Systole ~ ., data = select(casePredictSetTrainDev, -Diastole), 
                            method = "gbm", trControl = fitControl, verbose=F, tuneGrid=gbmGrid)
     print(ggplot(systole_model))
     print(ggplot(varImp(systole_model)))
+    print(systole_model$bestTune)
     diastole_model <- train(Diastole ~ ., data = select(casePredictSetTrainDev, -Systole), 
                             method = "gbm", trControl = fitControl, verbose=F, tuneGrid=gbmGrid)
     print(ggplot(diastole_model))
     print(ggplot(varImp(diastole_model)))
+    print(diastole_model$bestTune)
   } else {
     fixedTuningParams <- data.frame(interaction.depth = 3,
                                     n.trees = 50,
