@@ -111,6 +111,15 @@
 # [1] 0.8907102
 # CRPS score on train set: 0.02272002
 
+# LB 0.030880
+# Average error on Systole on validation set: 24.76124
+# Average error on Diastole on validation set: 32.9024
+# Creating submission scores for range 1001 1400
+# Correlations on 500 cases:
+#   [1] 0.8805198
+# [1] 0.8925185
+# CRPS score on train set: 0.0223398
+
 # TODO
 # p10/p90 instead of min/max
 # pLV threshold larger
@@ -126,7 +135,7 @@ library(DMwR) # outlier detection
 require(mgcv) # 3D smoothing
 
 # Threshold for LV segment probability
-pSegmentThreshold <- 0.2
+pSegmentThreshold <- 0.25
 defaultArea <- 0 # replacement value when pLV below threshold
 
 # Used both in segment and case prediction
