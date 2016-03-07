@@ -112,6 +112,7 @@
 # CRPS score on train set: 0.02272002
 
 # LB 0.030880
+# with pLV threshold to 2.5 instead of 2
 # Average error on Systole on validation set: 24.76124
 # Average error on Diastole on validation set: 32.9024
 # Creating submission scores for range 1001 1400
@@ -119,6 +120,14 @@
 #   [1] 0.8805198
 # [1] 0.8925185
 # CRPS score on train set: 0.0223398
+
+# FINAL STAGE 1 LB 0.030879
+# with 500 rounds in final model instead of 100
+# Average error on Systole on validation set: 24.91311
+# Average error on Diastole on validation set: 33.08062
+# [1] 0.8810654
+# [1] 0.8925299
+# CRPS score on train set: 0.0223377
 
 # TODO
 # p10/p90 instead of min/max
@@ -526,7 +535,7 @@ casePredictSetTrain <- filter(casePredictSet,
                               !is.na(casePredictSet$Diastole))
 
 # Run repeatedly to get a distribution of the predictions and a validation error indication
-nSamples <- 100
+nSamples <- 500
 doTuning <- F
 rmse_systole <- rep(NA, nSamples)
 rmse_diastole <- rep(NA, nSamples)
